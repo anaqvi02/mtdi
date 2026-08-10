@@ -1,0 +1,27 @@
+--- src/hook/trampoline/thunk.rs
++++ src/hook/trampoline/thunk.rs
+@@ -1,4 +1,5 @@
+ use std::arch::global_asm;
++use crate::hook::manager::get_hooks;
+ 
+ #[repr(C)]
+ #[derive(Debug)]
+@@ -141,8 +142,12 @@
+ 
+ #[no_mangle]
+ pub extern "C" fn hook_dispatcher(ctx: &mut RegisterContext) {
+-    // 1. Look up the hook by ctx.hook_id
+-    // 2. Call the generic callback
+-    // 3. Set ctx.x[16] to the trampoline address so the thunk can jump to it!
+-    
+-    // For now, this is a placeholder.
+-    println!("[mtdi] Generic Dispatcher Called! Hook ID: {:#x}", ctx.hook_id);
++    let hooks = get_hooks().lock().unwrap();
++    if let Some(hook_info) = hooks.get(&(ctx.hook_id as usize)) {
++        if let Some(handler) = hook_info.handler {
++            handler(ctx);
++        }
++        // Tell the thunk where to jump when it returns
++        ctx.x[16] = hook_info.trampoline_addr as u64;
++    }
+ }

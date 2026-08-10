@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(rustc --version)",
+      "Bash(cargo --version)",
+      "Bash(sw_vers)",
+      "Bash(cargo build *)",
+      "Bash(./target/release/mtrace /bin/echo hello)",
+      "Bash(./target/release/mtrace -t open /tmp/victim2)",
+      "Bash(./target/release/mtrace -s examples/probe_open.rs /tmp/victim2)"
+    ]
+  }
+}

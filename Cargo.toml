@@ -1,0 +1,13 @@
+[package]
+name = "mtrace"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+libc = "0.2"
+mach2 = "0.4"
+lazy_static = "1.4.0"
+
+[lib]
+name = "mactrace_lib"
+crate-type = ["cdylib", "rlib"]

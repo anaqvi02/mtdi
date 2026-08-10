@@ -1,0 +1,40 @@
+--- src/hook/manager.rs
++++ src/hook/manager.rs
+@@ -28,8 +28,11 @@
+     // 1. Build the trampoline that executes the stolen bytes and returns to the target
+     let mut stolen_bytes = [0u8; 16];
+     unsafe { std::ptr::copy_nonoverlapping(target_addr as *const u8, stolen_bytes.as_mut_ptr(), 16); }
++    println!("[mtdi] Building trampoline for {}", name);
+     let trampoline_addr = unsafe { build_trampoline(target_addr, &stolen_bytes) };
++    println!("[mtdi] Trampoline built at {:#x}", trampoline_addr);
+ 
+     // 2. Overwrite the target function
+     // If FastPath, we jump directly to the handler_addr
+@@ -37,10 +40,12 @@
+     let (jump_target, handler_func) = match hook_type {
+         HookType::FastPath(handler_addr) => (handler_addr, None),
+         HookType::FullContext(func) => {
++            println!("[mtdi] Allocating stub for {}", name);
+             let stub_addr = unsafe { allocate_trampoline(32) };
+             let stub_ptr = stub_addr as *mut u8;
+             let hook_id = trampoline_addr as u64; // Use trampoline_addr as the unique ID
+             let thunk_addr = hook_thunk as usize as u64;
+ 
+             let mut stub = [0u8; 32];
+@@ -53,13 +58,16 @@
+             stub[20..28].copy_from_slice(&thunk_addr.to_le_bytes());
+ 
+             unsafe {
+                 unprotect_jit();
+                 std::ptr::copy_nonoverlapping(stub.as_ptr(), stub_ptr, 32);
+                 extern "C" { fn sys_icache_invalidate(start: *mut libc::c_void, len: usize); }
+                 sys_icache_invalidate(stub_ptr as *mut _, 32);
+                 protect_jit();
+             }
+             (stub_addr, Some(func))
+         }
+     };
+ 
++    println!("[mtdi] Overwriting target {}", name);
+     unsafe { overwrite_with_jump(target_addr, jump_target) };
++    println!("[mtdi] Overwrite complete for {}", name);
