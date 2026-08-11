@@ -7,7 +7,7 @@ pub fn relocate_instruction(instruction: u32, original_pc: usize, out_buffer: &m
     }
 
     // 1. ADR / ADRP
-    if (instruction & 0x9F000000) == 0x10000000 {
+    if (instruction & 0x9F000000) == 0x10000000 || (instruction & 0x9F000000) == 0x90000000 {
         let is_adrp = (instruction & 0x80000000) != 0;
         let rd = instruction & 0x1F;
         

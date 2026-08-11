@@ -1,8 +1,7 @@
-use mach2::vm::{mach_vm_allocate, mach_vm_protect};
+use mach2::vm::{mach_vm_allocate};
 use mach2::vm_types::mach_vm_address_t;
 use mach2::mach_types::task_name_t;
 use mach2::traps::mach_task_self;
-use mach2::vm_prot::{VM_PROT_READ, VM_PROT_EXECUTE, VM_PROT_WRITE};
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 

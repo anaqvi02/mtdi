@@ -10,7 +10,6 @@ pub struct AppArgs {
     pub custom_dylib: Option<String>,
     pub json_output: bool,
     pub ecs_output: bool,
-    pub ndump: bool,
     pub legacy_unwind: bool,
 }
 
@@ -26,7 +25,6 @@ pub fn parse_args() -> AppArgs {
         custom_dylib: None,
         json_output: false,
         ecs_output: false,
-        ndump: false,
         legacy_unwind: false,
     };
 
@@ -77,9 +75,6 @@ pub fn parse_args() -> AppArgs {
                 std::process::exit(1);
             }
             parsed.script_file = Some(args.remove(0));
-        } else if args[0] == "-n" || args[0] == "--ndump" {
-            args.remove(0);
-            parsed.ndump = true;
         } else if args[0] == "-u" || args[0] == "--legacy-unwind" {
             args.remove(0);
             parsed.legacy_unwind = true;
@@ -121,7 +116,6 @@ pub fn print_help() {
     println!("  -o, --output <file>    Write output to a specific file instead of stderr");
     println!("  -j, --json             Export logs in NDJSON format");
     println!("  -e, --ecs              Export logs in Elastic Common Schema (ECS) JSON format");
-    println!("  -n, --ndump                      Enable hex dump format for packet payloads");
     println!("  -u, --legacy-unwind              Enable traditional catch_unwind safety net (permits panics/unwraps, slightly slower)");
     println!("  -h, --help             Print this help message and exit");
     println!("");

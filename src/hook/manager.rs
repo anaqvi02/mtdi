@@ -39,7 +39,7 @@ pub fn install_hook(name: &str, target_addr: usize, hook_type: HookType) -> Resu
     let (jump_target, handler_func) = match hook_type {
         HookType::FastPath(handler_addr) => (handler_addr, None),
         HookType::FullContext(func) => {
-            let stub_addr = unsafe { allocate_trampoline(32) };
+            let stub_addr = allocate_trampoline(32);
             let stub_ptr = stub_addr as *mut u8;
             let hook_id = trampoline_addr as u64; 
             let thunk_addr = hook_thunk as usize as u64;

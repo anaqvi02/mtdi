@@ -17,3 +17,6 @@ test_kill_10s.sh
 victim2
 hello
 hello.go
+
+# python
+__pycache__/

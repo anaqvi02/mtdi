@@ -9,8 +9,10 @@
 #include <sys/mman.h>
 #include <sys/wait.h>
 #include <string.h>
+#include <signal.h>
 
 int main() {
+    signal(SIGPIPE, SIG_IGN); // send()/recv() on a dead socket would otherwise kill the demo
     printf("[Victim] Starting exhaustive syscall test...\n");
 
     // 1. stat

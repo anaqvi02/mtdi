@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "mtdi": {
+      "command": "/Users/alinaqvi/Desktop/mtdi/.venv/bin/python3",
+      "args": [
+        "/Users/alinaqvi/Desktop/mtdi/src/mcp_server.py"
+      ]
+    }
+  }
+}

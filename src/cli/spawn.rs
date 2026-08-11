@@ -65,9 +65,6 @@ pub fn spawn_target(args: AppArgs, dylib_path: &PathBuf) -> std::io::Result<()> 
     if args.ecs_output {
         cmd.env("MTRACE_ECS", "1");
     }
-    if args.ndump {
-        cmd.env("MTRACE_NDUMP", "1");
-    }
 
     let mut child = cmd.spawn()?;
     CHILD_PID.store(child.id(), Ordering::Relaxed);

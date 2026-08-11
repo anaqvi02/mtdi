@@ -15,7 +15,7 @@ pub fn is_pc_relative(instruction: u32) -> bool {
     if ((instruction >> 24) & 0b01111111) == 0b00110110 { return true; }
     
     // ADR or ADRP
-    if (instruction & 0x9F000000) == 0x10000000 { return true; }
+    if (instruction & 0x9F000000) == 0x10000000 || (instruction & 0x9F000000) == 0x90000000 { return true; }
     
     // LDR (literal)
     if (instruction & 0x3B000000) == 0x18000000 { return true; }

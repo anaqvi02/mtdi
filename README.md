@@ -6,7 +6,7 @@
 
 `mtrace` (aka `mt`,`mactrace`) is a high-speed, zero-privilege, user-space system call tracer for macOS. 
 
-Unlike Apple's native `dtruss` which requires disabling System Integrity Protection (SIP) and running as root, `mtrace` intercepts system calls entirely in user-space via `DYLD_INSERT_LIBRARIES` dynamic interposition.
+Unlike Apple's native `dtruss` which requires disabling System Integrity Protection (SIP) and running as root, `mtrace` intercepts libc calls entirely in user-space: `DYLD_INSERT_LIBRARIES` loads a dylib which installs inline hooks (AArch64 detours with instruction relocation) on the target functions.
 
 If you are a reverse engineer, malware analyst, or just want to debug a crashing application, `mtrace` gives you unparalleled visibility and control over what a process is doing, without ever touching your system's security settings.
 
@@ -16,7 +16,7 @@ If you are a reverse engineer, malware analyst, or just want to debug a crashing
 - **Zero Sudo required:** Run it instantly as a standard user.
 - **Microsecond Timestamps:** Accurately measure network latency and disk I/O.
 - **Fast Filtering:** Use `-t` to seamlessly bypass the logging of noisy syscalls.
-- **Active Manipulation:** Because it intercepts calls in user-space, you can freely edit the Rust hooks to block telemetry, bypass license checks, or spoof network traffic. Ex: Very easy to implement TOCTOU exploits.
+- **Active Manipulation:** Because it intercepts calls in user-space, you can freely edit the hooks to block telemetry, bypass license checks, or spoof network traffic. Ex: Very easy to implement TOCTOU exploits.
 
 ## A small non-comprehensive list of notable cases that mt works on (verified by me)
 
@@ -58,14 +58,14 @@ If you are a reverse engineer, malware analyst, or just want to debug a crashing
 ## Why should you use this?
 - works w/o disabling sip and no sudo required (unlike dtrace/dtruss)
 - its fast and purpose-built (see below) (unlike Frida) (this cant do 99% of what Frida does, but this is a lot faster for this one purpose)
-- dead simple to modify (see --swapquickstart)
+- dead simple to modify (see examples/swap.rs)
 - dead simple to use
 
 ## Why should you NOT use this?
 - cannot trace Apple-signed system binaries or `arm64e` apps (blocked by SIP)
-- cannot inspect internal memory, CPU registers, or custom functions (unlike Frida or QBDI)
+- cannot inspect internal memory or CPU registers (unlike Frida or QBDI); probe hooks are limited to exported symbols
 - can be bypassed by things that executes raw assembly syscalls (`svc 0x80`) instead of calling `libc`
-- only tracks the explicit 25 system/libc calls it hooks (unlike `dtruss` which automatically catches everything crossing the kernel boundary)
+- only tracks the explicit libc calls it hooks (unlike `dtruss` which automatically catches everything crossing the kernel boundary)
 - doesnt do a whole lot except for what its built to do
 
 ## Quick Start
@@ -76,50 +76,40 @@ Make sure you have Rust installed, then compile the project:
 cargo build --release
 ```
 
-### 2. Global Install (Optional)
-To run `mtrace` from anywhere seamlessly, you can link the wrapper scripts to your local path:
-```bash
-chmod +x wrapper.sh
-ln -sf $(pwd)/wrapper.sh ~/.local/bin/mtrace
-ln -sf $(pwd)/wrapper.sh ~/.local/bin/mt
-```
-*(The wrapper script handles automatic background recompilation, so you can freely mod the source code and the changes will instantly apply next time you run `mt`!)*
-
-### 3. Usage
+### 2. Usage
 Run any standard `arm64` macOS application under the tracer:
 
 ```bash
 # Basic usage
-mtrace python3 -c "print('hello')"
+./target/release/mtrace python3 -c "print('hello')"
 
-# Filter for specific syscalls (comma-separated)
-mtrace -t open,socket,execve ./my_binary
+# Filter: only log open() calls
+./target/release/mtrace -t open ./my_binary
 
 # Write logs to a file instead of stderr
-mtrace -o trace.log ./my_binary
-
-# Dump network and I/O buffer payloads (HTTP traffic, raw datagrams, etc.) to a secondary 'mtrace_ndump.log' file
-mtrace --ndump -t send,recv,sendto,recvfrom,read,write ./my_binary
+./target/release/mtrace -o trace.log ./my_binary
 
 # Output logs in NDJSON or Elastic Common Schema (ECS) format for SIEM ingestion
-mtrace -j -o trace.json ./my_binary
-mtrace -e -o ecs_trace.json ./my_binary
+./target/release/mtrace -j -o trace.json ./my_binary
+./target/release/mtrace -e -o ecs_trace.json ./my_binary
 ```
 
-## Dynamic Instrumentation (Swapping)
-`mtrace` is not just a passive logger; it is a full **Dynamic Injection Engine**. You can inject custom Rust logic directly into the hot path of the traced application to block system calls, spoof returns, or build powerful custom sandboxes. *(Note: This feature requires `rustc` to be installed on your system).*
+## Dynamic Instrumentation
+`mtrace` ships a **Dynamic Injection Engine** (`mtdis`). You can write a Rust probe that hooks functions in the traced process to log, mutate, or spoof their behavior. *(Note: This requires `rustc` to be installed on your system).*
 
-To get started quickly, download the standard 25-hook template:
+The engine verifies your probe's AST (rejecting `unwrap()`/`panic!`/raw indexing for the Zero-Panic build), JIT-compiles it with `-C panic=abort`, and injects a self-contained dylib that installs its own inline hooks.
+
+Probes use the `MtdiSafeContext` / `MtdiRegistry` API — see `examples/probe_open.rs` for a working template:
 ```bash
-mtrace --swapquickstart
+./target/release/mtrace -s examples/probe_open.rs ./your_binary
 ```
-This will fetch a boilerplate `swap_quickstart.rs` file into your current directory, pre-configured with all supported hooks.
 
-You can then write custom logic (e.g. returning `EACCES` when a specific file is opened) and run it with the `-s` flag:
+### Swapping open()
+You can also replace `open()` entirely with your own implementation. Compile `examples/swap.rs` to a dylib and set `MTRACE_SWAP_DYLIB`; the engine calls its `on_open` instead of the real libc `open`. The template forwards via raw `syscall`, so it can't recurse back into the hook:
 ```bash
-mtrace -s swap_quickstart.rs ./your_binary
+rustc --edition=2021 --crate-type cdylib -O examples/swap.rs -o swap.dylib
+MTRACE_SWAP_DYLIB=$PWD/swap.dylib ./target/release/mtrace ./your_binary
 ```
-`mtrace` will automatically JIT-compile your script and dynamically hijack all matched syscalls instantly!
 
 ## What Can (and Cannot) Be Traced
 Apple's System Integrity Protection (SIP) creates a hard boundary around core OS components. Here is a quick cheat sheet on what you can and cannot trace:
@@ -139,36 +129,19 @@ Any third-party software, developer tool, or custom script that is standard `arm
 - **Third-Party Applications:** Steam, Discord, VS Code (many large Electron and game apps disable Library Validation out of the box).
 - **Basically anything that you might want to run this on works.**
 
-## Tracked System Calls (25)
-`mtrace` currently tracks the following high-value system calls out of the box. Using the `-t` flag with a comma-separated list of these names will allow you to filter the output.
+## Tracked Calls
+The default dylib currently hooks one function: `open`. Filter with `-t open` (or `-t asdf` to disable logging entirely).
 
-- **File / IO:** `open`, `close`, `read`, `write`, `stat`, `fstat`, `lstat`
-- **File System / Dir:** `rename`, `unlink`, `mkdir`, `rmdir`
-- **Process & Mem:** `execve`, `fork`, `exit`, `mmap`, `munmap`
-- **Networking:** `socket`, `connect`, `send`, `recv`, `bind`, `listen`, `accept`, `sendto`, `recvfrom`
-
-> **Note:** Data payloads for `read`, `write`, `send`, `recv`, `sendto`, and `recvfrom` can be captured and written to a secondary file by passing the `--ndump` flag.
+The hook engine — FastPath handlers, full-context thunks, instruction relocation — supports any function: the probe engine (`-s`) can hook any exported symbol, and a new built-in hook is one `install_hook` call plus a handler in `src/lib.rs`. (The previous 25-handler set was removed during cleanup: 24 of its handlers were never actually installed, and its `log_event` logger was a no-op.)
 
 ## Benchmarks & Performance
-`mtrace` is designed to be a completely zero-overhead tracer. No expensive string parsing or heap allocations on the hot path are used. Here is the 5-trial average of a 500,000 iteration heavy benchmark:
+Run the microbenchmark with:
+```bash
+cargo run --release --bin bench
+```
+It measures the FullContext uprobe overhead (full register save/restore + dispatcher + trampoline) against a no-op baseline — typically ~15 ns per call on Apple Silicon.
 
-| Syscall Category | Native Execution | Traced (Filtered Out) | Traced (Fully Logged) |
-| :--- | :--- | :--- | :--- |
-| `stat` | 788 ns / 0.00078 ms | **772 ns / 0.00077 ms** | 863 ns / 0.00086 ms |
-| `fstat` | 363 ns / 0.00036 ms | **389 ns / 0.00038 ms** | 438 ns / 0.00043 ms |
-| `open` / `close` | 4566 ns / 0.00456 ms | **4700 ns / 0.00470 ms** | 4717 ns / 0.00471 ms |
-| `read` | 284 ns / 0.00028 ms | **289 ns / 0.00028 ms** | 292 ns / 0.00029 ms |
-| `write` | 398 ns / 0.00039 ms | **424 ns / 0.00042 ms** | 406 ns / 0.00040 ms |
-| `socket` / `close` | 1894 ns / 0.00189 ms | **1749 ns / 0.00174 ms** | 1990 ns / 0.00199 ms |
-| `conn` / `send` / `recv` | 528 ns / 0.00052 ms | **595 ns / 0.00059 ms** | 567 ns / 0.00056 ms |
-| `mmap` / `munmap` | 371 ns / 0.00037 ms | **422 ns / 0.00042 ms** | 423 ns / 0.00042 ms |
+The logging hot path is allocation-free: `mach_absolute_time()` + a memcpy into a per-thread SPSC ring buffer, with a background thread doing all formatting and I/O. Timestamps are anchored once with `gettimeofday` at startup and computed as `mach_absolute_time` deltas — no syscalls on the hot path.
 
-*(Note: In contrast, tiny improvements in other filtered calls, such as `stat` executing 16 ns faster, are purely statistical noise within the margin of error of CPU benchmarking).*
-
-**Buffer Dumping (`--ndump`) Performance:** `mtrace` writes payload buffers (capped at 1MB per call) with completely zero-allocation logic. The raw pointers are passed directly to the kernel for secondary file I/O, meaning dumping network and file traffic introduces negligible CPU overhead and is only restricted by the write-speed of your disk.
-
-### *Side note on Socket
-You may notice that native `socket` creation took `2312 ns` natively, but running it through `mtrace` actually dropped the execution time down to `922 ns`. This is not an error!
-
-On macOS, `libnetwork.dylib` and other userspace XPC daemons (like the macOS Application Firewall or third-party monitors) hook into raw network calls for telemetry and security validation. By using `DYLD_INSERT_LIBRARIES` to aggressively interpose on the lowest-level `libc::socket` stub, `mtrace` inadvertently bypasses some of these higher-level Apple telemetry frameworks. The result is a tracer so efficient that it actively accelerates macOS networking by shedding the OS's native userspace telemetry bloat.
+*Note: the historical README table claiming near-zero overhead across 25 syscalls was inaccurate — most of those syscalls were never hooked in that build, and the "traced socket() is faster than native because it bypasses Apple telemetry" figure was measurement noise.*
 
