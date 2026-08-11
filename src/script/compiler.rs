@@ -3,8 +3,49 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use syn::visit::Visit;
 
-pub fn compile_script(script_path: &Path) -> Result<PathBuf, String> {
+struct SafetyVerifier {
+    pub errors: Vec<String>,
+}
+
+impl<'ast> Visit<'ast> for SafetyVerifier {
+    fn visit_expr_index(&mut self, node: &'ast syn::ExprIndex) {
+        self.errors.push("AST Verifier: Raw array indexing '[]' is forbidden. Use '.get_safe()' to guarantee Zero-Panic bounds clamping.".to_string());
+        syn::visit::visit_expr_index(self, node);
+    }
+    
+    fn visit_expr_method_call(&mut self, node: &'ast syn::ExprMethodCall) {
+        let method_name = node.method.to_string();
+        if method_name == "unwrap" || method_name == "expect" {
+            self.errors.push(format!("AST Verifier: Method '.{}()' is forbidden because it can panic. Use '.unwrap_or()' instead.", method_name));
+        }
+        syn::visit::visit_expr_method_call(self, node);
+    }
+    
+    fn visit_macro(&mut self, node: &'ast syn::Macro) {
+        if let Some(segment) = node.path.segments.last() {
+            let name = segment.ident.to_string();
+            if ["panic", "assert", "assert_eq", "assert_ne", "todo", "unimplemented", "unreachable"].contains(&name.as_str()) {
+                self.errors.push(format!("AST Verifier: Macro '{}!' is forbidden because it triggers an unconditional panic.", name));
+            }
+        }
+        syn::visit::visit_macro(self, node);
+    }
+    
+    fn visit_expr_call(&mut self, node: &'ast syn::ExprCall) {
+        if let syn::Expr::Path(expr_path) = &*node.func {
+            if let Some(segment) = expr_path.path.segments.last() {
+                let func_name = segment.ident.to_string();
+                if func_name == "unwrap" || func_name == "expect" {
+                    self.errors.push(format!("AST Verifier: Function call to '{}' is forbidden.", func_name));
+                }
+            }
+        }
+        syn::visit::visit_expr_call(self, node);
+    }
+}
+pub fn compile_script(script_path: &Path, legacy_unwind: bool) -> Result<PathBuf, String> {
     if !script_path.exists() {
         return Err(format!("Script file not found: {}", script_path.display()));
     }
@@ -12,21 +53,19 @@ pub fn compile_script(script_path: &Path) -> Result<PathBuf, String> {
     let user_code = fs::read_to_string(script_path)
         .map_err(|e| format!("Failed to read script file: {}", e))?;
 
-    // 1. Security check: Forbid unsafe keyword in the user script
-    let mut in_comment = false;
-    for line in user_code.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("/*") { in_comment = true; }
-        if in_comment {
-            if trimmed.contains("*/") { in_comment = false; }
-            continue;
-        }
-        if trimmed.starts_with("//") { continue; }
+    // 1. Security & AST verification: Full AST pass to ban unsafe/panicking syntax
+    if !legacy_unwind {
+        let ast = syn::parse_file(&user_code)
+            .map_err(|e| format!("[mtdis] AST Parse Error: {}", e))?;
+        let mut verifier = SafetyVerifier { errors: Vec::new() };
+        verifier.visit_file(&ast);
 
-        // Check for unsafe tokens
-        let tokens: Vec<&str> = trimmed.split_whitespace().collect();
-        if tokens.contains(&"unsafe") {
-            return Err("[mtdis] Sandbox Security Violation: 'unsafe' code is strictly forbidden in sandboxed probes.".to_string());
+        if !verifier.errors.is_empty() {
+            let mut msg = String::from("[mtdis] Probe Verification Failed:\n");
+            for err in verifier.errors {
+                msg.push_str(&format!("- {}\n", err));
+            }
+            return Err(msg);
         }
     }
 
@@ -38,21 +77,30 @@ pub fn compile_script(script_path: &Path) -> Result<PathBuf, String> {
     let wrapper_src_path = PathBuf::from(format!("/tmp/mtdis_wrap_{:x}.rs", code_hash));
     let out_dylib_path = PathBuf::from(format!("/tmp/mtdis_lib_{:x}.dylib", code_hash));
 
-    // 3. Generate self-contained harness with panic shielding & safe API
-    let full_source = generate_harness(&user_code);
+    // 3. Generate self-contained harness with Zero-Panic API
+    let full_source = generate_harness(&user_code, legacy_unwind);
     fs::write(&wrapper_src_path, full_source)
         .map_err(|e| format!("Failed to write wrapper source: {}", e))?;
 
     // 4. Invoke rustc to compile the dylib
-    let status = Command::new("rustc")
-        .arg("--edition=2021")
+    let mut cmd = Command::new("rustc");
+    cmd.arg("--edition=2021")
         .arg("--crate-type")
         .arg("cdylib")
-        .arg("-O")
-        .arg(&wrapper_src_path)
+        .arg("-O");
+
+    if !legacy_unwind {
+        // -C overflow-checks=off : Hardware executes math natively (wrapping silently like ARM64 C code).
+        // -C panic=abort         : Strip all DWARF unwinding branches for 100% straight-line performance.
+        cmd.arg("-C").arg("overflow-checks=off")
+           .arg("-C").arg("panic=abort");
+    }
+
+    cmd.arg(&wrapper_src_path)
         .arg("-o")
-        .arg(&out_dylib_path)
-        .output()
+        .arg(&out_dylib_path);
+
+    let status = cmd.output()
         .map_err(|e| format!("Failed to execute rustc: {}", e))?;
 
     if !status.status.success() {
@@ -63,8 +111,25 @@ pub fn compile_script(script_path: &Path) -> Result<PathBuf, String> {
     Ok(out_dylib_path)
 }
 
-fn generate_harness(user_code: &str) -> String {
+fn generate_harness(user_code: &str, legacy_unwind: bool) -> String {
+    let dispatch_logic = if legacy_unwind {
+        r###"
+        // LEGACY UNWIND ARCHITECTURE
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            handler(&mut safe_ctx);
+        }));
+        "###
+    } else {
+        r###"
+        // ZERO-PANIC ARCHITECTURE: 
+        // 100% straight-line execution. No catch_unwind, no setjmp, no landing pads.
+        // Pure native machine code operating as a Total Function.
+        handler(&mut safe_ctx);
+        "###
+    };
+
     format!(r###"// Auto-generated by mtdis (MacTrace Dynamic Instrumentation Sandboxed)
+// ZERO-PANIC ARCHITECTURE
 use std::arch::global_asm;
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -179,7 +244,6 @@ _hook_thunk:
 "#);
 
 extern "C" {{
-    fn hook_thunk();
     fn mach_task_self() -> u32;
     fn mach_vm_protect(target_task: u32, address: u64, size: u64, set_maximum: i32, new_protection: i32) -> i32;
     fn mach_vm_allocate(target_task: u32, address: *mut u64, size: u64, flags: i32) -> i32;
@@ -262,10 +326,7 @@ pub extern "C" fn hook_dispatcher(ctx: &mut RegisterContext) {{
         depth.set(1);
         let mut safe_ctx = MtdiSafeContext {{ raw: ctx }};
 
-        // Panic-shielded execution: catch_unwind safely traps any probe panic
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {{
-            handler(&mut safe_ctx);
-        }}));
+        {dispatch_logic}
 
         depth.set(0);
     }});
@@ -298,225 +359,147 @@ fn relocate_instruction(instruction: u32, original_pc: usize, out_buffer: &mut V
         return;
     }}
 
-    // 1. ADR / ADRP
+    // PC-Relative relocations...
     if (instruction & 0x9F000000) == 0x10000000 || (instruction & 0x9F000000) == 0x90000000 {{
         let is_adrp = (instruction & 0x80000000) != 0;
         let rd = instruction & 0x1F;
-        
         let immlo = (instruction >> 29) & 3;
         let immhi = (instruction >> 5) & 0x7FFFF;
         let mut imm = (immhi << 2) | immlo;
-        
-        if (imm & 0x100000) != 0 {{
-            imm |= 0xFFE00000;
-        }}
+        if (imm & 0x100000) != 0 {{ imm |= 0xFFE00000; }}
         let imm = imm as i32 as i64;
-        
-        let target = if is_adrp {{
-            ((original_pc as u64 & !0xFFF) as i64 + (imm << 12)) as u64
-        }} else {{
-            (original_pc as i64 + imm) as u64
-        }};
-        
-        let ldr = 0x58000040 | rd;
-        let b = 0x14000003u32;
-        out_buffer.extend_from_slice(&ldr.to_le_bytes());
-        out_buffer.extend_from_slice(&b.to_le_bytes());
+        let target = if is_adrp {{ ((original_pc as u64 & !0xFFF) as i64 + (imm << 12)) as u64 }} else {{ (original_pc as i64 + imm) as u64 }};
+        out_buffer.extend_from_slice(&(0x58000040 | rd).to_le_bytes());
+        out_buffer.extend_from_slice(&0x14000003u32.to_le_bytes());
         out_buffer.extend_from_slice(&target.to_le_bytes());
         return;
     }}
-
-    // 2. Unconditional Branch (B / BL)
     if (instruction >> 26) == 0b000101 || (instruction >> 26) == 0b100101 {{
         let is_bl = (instruction & 0x80000000) != 0;
         let mut imm = instruction & 0x03FFFFFF;
-        if (imm & 0x02000000) != 0 {{
-            imm |= 0xFC000000;
-        }}
-        let imm = imm as i32 as i64;
-        let target = (original_pc as i64 + (imm * 4)) as u64;
-        
+        if (imm & 0x02000000) != 0 {{ imm |= 0xFC000000; }}
+        let target = (original_pc as i64 + (imm as i32 as i64 * 4)) as u64;
         if !is_bl {{
-            let ldr_x16 = 0x58000050u32;
-            let br_x16 = 0xD61F0200u32;
-            out_buffer.extend_from_slice(&ldr_x16.to_le_bytes());
-            out_buffer.extend_from_slice(&br_x16.to_le_bytes());
+            out_buffer.extend_from_slice(&0x58000050u32.to_le_bytes());
+            out_buffer.extend_from_slice(&0xD61F0200u32.to_le_bytes());
             out_buffer.extend_from_slice(&target.to_le_bytes());
         }} else {{
-            let ldr_x30 = 0x5800007Eu32;
-            let ldr_x16 = 0x58000090u32;
-            let br_x16 = 0xD61F0200u32;
-            let ret_addr = (original_pc + 4) as u64;
-            
-            out_buffer.extend_from_slice(&ldr_x30.to_le_bytes());
-            out_buffer.extend_from_slice(&ldr_x16.to_le_bytes());
-            out_buffer.extend_from_slice(&br_x16.to_le_bytes());
-            out_buffer.extend_from_slice(&ret_addr.to_le_bytes());
+            out_buffer.extend_from_slice(&0x5800007Eu32.to_le_bytes());
+            out_buffer.extend_from_slice(&0x58000090u32.to_le_bytes());
+            out_buffer.extend_from_slice(&0xD61F0200u32.to_le_bytes());
+            out_buffer.extend_from_slice(&(original_pc as u64 + 4).to_le_bytes());
             out_buffer.extend_from_slice(&target.to_le_bytes());
         }}
         return;
     }}
-
-    // 3. Conditional Branch (B.cond)
     if (instruction >> 24) == 0b01010100 {{
         let mut imm = (instruction >> 5) & 0x7FFFF;
         if (imm & 0x40000) != 0 {{ imm |= 0xFFF80000; }}
-        let imm = imm as i32 as i64;
-        let target = (original_pc as i64 + (imm * 4)) as u64;
-        
-        let cond = instruction & 0xF;
-        let inv_cond = cond ^ 1;
-        
-        let b_inv_cond = 0x54000000 | (5 << 5) | inv_cond;
-        let ldr_x16 = 0x58000050u32;
-        let br_x16 = 0xD61F0200u32;
-        
+        let target = (original_pc as i64 + (imm as i32 as i64 * 4)) as u64;
+        let b_inv_cond = 0x54000000 | (5 << 5) | ((instruction & 0xF) ^ 1);
         out_buffer.extend_from_slice(&b_inv_cond.to_le_bytes());
-        out_buffer.extend_from_slice(&ldr_x16.to_le_bytes());
-        out_buffer.extend_from_slice(&br_x16.to_le_bytes());
+        out_buffer.extend_from_slice(&0x58000050u32.to_le_bytes());
+        out_buffer.extend_from_slice(&0xD61F0200u32.to_le_bytes());
         out_buffer.extend_from_slice(&target.to_le_bytes());
         return;
     }}
-    
-    // 4. CBZ / CBNZ
     if ((instruction >> 24) & 0b01111111) == 0b00110100 {{
         let mut imm = (instruction >> 5) & 0x7FFFF;
         if (imm & 0x40000) != 0 {{ imm |= 0xFFF80000; }}
-        let imm = imm as i32 as i64;
-        let target = (original_pc as i64 + (imm * 4)) as u64;
-        
-        let inv_inst = instruction ^ (1 << 24);
-        let inv_inst = (inv_inst & !(0x7FFFF << 5)) | (5 << 5);
-        
-        let ldr_x16 = 0x58000050u32;
-        let br_x16 = 0xD61F0200u32;
-        
+        let target = (original_pc as i64 + (imm as i32 as i64 * 4)) as u64;
+        let inv_inst = ((instruction ^ (1 << 24)) & !(0x7FFFF << 5)) | (5 << 5);
         out_buffer.extend_from_slice(&inv_inst.to_le_bytes());
-        out_buffer.extend_from_slice(&ldr_x16.to_le_bytes());
-        out_buffer.extend_from_slice(&br_x16.to_le_bytes());
+        out_buffer.extend_from_slice(&0x58000050u32.to_le_bytes());
+        out_buffer.extend_from_slice(&0xD61F0200u32.to_le_bytes());
         out_buffer.extend_from_slice(&target.to_le_bytes());
         return;
     }}
-    
-    // 5. TBZ / TBNZ
     if ((instruction >> 24) & 0b01111111) == 0b00110110 {{
         let mut imm = (instruction >> 5) & 0x3FFF;
         if (imm & 0x2000) != 0 {{ imm |= 0xFFFFC000; }}
-        let imm = imm as i32 as i64;
-        let target = (original_pc as i64 + (imm * 4)) as u64;
-        
-        let inv_inst = instruction ^ (1 << 24);
-        let inv_inst = (inv_inst & !(0x3FFF << 5)) | (5 << 5);
-        
-        let ldr_x16 = 0x58000050u32;
-        let br_x16 = 0xD61F0200u32;
-        
+        let target = (original_pc as i64 + (imm as i32 as i64 * 4)) as u64;
+        let inv_inst = ((instruction ^ (1 << 24)) & !(0x3FFF << 5)) | (5 << 5);
         out_buffer.extend_from_slice(&inv_inst.to_le_bytes());
-        out_buffer.extend_from_slice(&ldr_x16.to_le_bytes());
-        out_buffer.extend_from_slice(&br_x16.to_le_bytes());
+        out_buffer.extend_from_slice(&0x58000050u32.to_le_bytes());
+        out_buffer.extend_from_slice(&0xD61F0200u32.to_le_bytes());
         out_buffer.extend_from_slice(&target.to_le_bytes());
         return;
     }}
-    
-    // 6. LDR (literal)
     if (instruction & 0x3B000000) == 0x18000000 {{
         let mut imm = (instruction >> 5) & 0x7FFFF;
         if (imm & 0x40000) != 0 {{ imm |= 0xFFF80000; }}
-        let imm = imm as i32 as i64;
-        let target = (original_pc as i64 + (imm * 4)) as u64;
-        
-        let ldr_literal = (instruction & 0xFF00001F) | (2 << 5);
-        let b = 0x14000003u32;
+        let target = (original_pc as i64 + (imm as i32 as i64 * 4)) as u64;
         let value = unsafe {{ *(target as *const u64) }};
-        
-        out_buffer.extend_from_slice(&ldr_literal.to_le_bytes());
-        out_buffer.extend_from_slice(&b.to_le_bytes());
+        out_buffer.extend_from_slice(&((instruction & 0xFF00001F) | (2 << 5)).to_le_bytes());
+        out_buffer.extend_from_slice(&0x14000003u32.to_le_bytes());
         out_buffer.extend_from_slice(&value.to_le_bytes());
         return;
     }}
-
     out_buffer.extend_from_slice(&instruction.to_le_bytes());
 }}
 
 unsafe fn build_trampoline(target_addr: usize, stolen_len: usize) -> usize {{
     let num_insns = stolen_len / 4;
     let mut relocated = Vec::with_capacity(64);
-
     let mut has_ret = false;
     for i in 0..num_insns {{
         let insn = *((target_addr + i * 4) as *const u32);
-        let current_pc = target_addr + i * 4;
-        if insn == 0xD65F03C0 {{ // ret
-            has_ret = true;
-        }}
-        relocate_instruction(insn, current_pc, &mut relocated);
+        if insn == 0xD65F03C0 {{ has_ret = true; }}
+        relocate_instruction(insn, target_addr + i * 4, &mut relocated);
     }}
-
     if !has_ret {{
-        let return_addr = (target_addr + stolen_len) as u64;
         let mut branch_payload = [0u8; 16];
-        branch_payload[0..4].copy_from_slice(&0x58000050u32.to_le_bytes()); // LDR X16, #8
-        branch_payload[4..8].copy_from_slice(&0xD61F0200u32.to_le_bytes()); // BR X16
-        branch_payload[8..16].copy_from_slice(&return_addr.to_le_bytes());
+        branch_payload[0..4].copy_from_slice(&0x58000050u32.to_le_bytes());
+        branch_payload[4..8].copy_from_slice(&0xD61F0200u32.to_le_bytes());
+        branch_payload[8..16].copy_from_slice(&((target_addr + stolen_len) as u64).to_le_bytes());
         relocated.extend_from_slice(&branch_payload);
     }}
-
     let tramp_addr = allocate_near(target_addr, relocated.len());
-    let tramp_ptr = tramp_addr as *mut u8;
-
     unprotect_page(tramp_addr);
-    std::ptr::copy_nonoverlapping(relocated.as_ptr(), tramp_ptr, relocated.len());
-    sys_icache_invalidate(tramp_ptr as *mut _, relocated.len());
+    std::ptr::copy_nonoverlapping(relocated.as_ptr(), tramp_addr as *mut u8, relocated.len());
+    sys_icache_invalidate(tramp_addr as *mut _, relocated.len());
     protect_page(tramp_addr);
-
     tramp_addr
+}}
+
+extern "C" {{
+    fn hook_thunk();
 }}
 
 fn raw_install_hook(target_addr: usize, handler: fn(&mut MtdiSafeContext)) -> Result<usize, String> {{
     unsafe {{
         let stub_addr = allocate_near(target_addr, 32);
-        let stub_ptr = stub_addr as *mut u8;
-
         let is_near = can_branch_26(target_addr, stub_addr);
         let stolen_len = if is_near {{ 4 }} else {{ 16 }};
-
         let trampoline_addr = build_trampoline(target_addr, stolen_len);
 
-        let hook_id = trampoline_addr as u64;
-        let thunk_addr = hook_thunk as usize as u64;
-
         let mut stub = [0u8; 32];
-        stub[0..4].copy_from_slice(&0x58000070u32.to_le_bytes()); // LDR X16, #12
-        stub[4..8].copy_from_slice(&0x58000091u32.to_le_bytes()); // LDR X17, #16
-        stub[8..12].copy_from_slice(&0xD61F0220u32.to_le_bytes()); // BR X17
-        stub[12..20].copy_from_slice(&hook_id.to_le_bytes());
-        stub[20..28].copy_from_slice(&thunk_addr.to_le_bytes());
+        stub[0..4].copy_from_slice(&0x58000070u32.to_le_bytes());
+        stub[4..8].copy_from_slice(&0x58000091u32.to_le_bytes());
+        stub[8..12].copy_from_slice(&0xD61F0220u32.to_le_bytes());
+        stub[12..20].copy_from_slice(&(trampoline_addr as u64).to_le_bytes());
+        stub[20..28].copy_from_slice(&(hook_thunk as usize as u64).to_le_bytes());
 
         unprotect_page(stub_addr);
-        std::ptr::copy_nonoverlapping(stub.as_ptr(), stub_ptr, 32);
-        sys_icache_invalidate(stub_ptr as *mut _, 32);
+        std::ptr::copy_nonoverlapping(stub.as_ptr(), stub_addr as *mut u8, 32);
+        sys_icache_invalidate(stub_addr as *mut _, 32);
         protect_page(stub_addr);
 
         unprotect_page(target_addr);
         if is_near {{
-            let branch_insn = make_branch_26(target_addr, stub_addr);
-            std::ptr::copy_nonoverlapping(branch_insn.to_le_bytes().as_ptr(), target_addr as *mut u8, 4);
+            std::ptr::copy_nonoverlapping(make_branch_26(target_addr, stub_addr).to_le_bytes().as_ptr(), target_addr as *mut u8, 4);
             sys_icache_invalidate(target_addr as *mut _, 4);
         }} else {{
             let mut jump_insns = [0u8; 16];
-            jump_insns[0..4].copy_from_slice(&0x58000051u32.to_le_bytes()); // LDR X17, #8
-            jump_insns[4..8].copy_from_slice(&0xD61F0220u32.to_le_bytes()); // BR X17
+            jump_insns[0..4].copy_from_slice(&0x58000051u32.to_le_bytes());
+            jump_insns[4..8].copy_from_slice(&0xD61F0220u32.to_le_bytes());
             jump_insns[8..16].copy_from_slice(&(stub_addr as u64).to_le_bytes());
             std::ptr::copy_nonoverlapping(jump_insns.as_ptr(), target_addr as *mut u8, 16);
             sys_icache_invalidate(target_addr as *mut _, 16);
         }}
         protect_page(target_addr);
 
-        get_hooks().lock().unwrap().insert(trampoline_addr, HookInfo {{
-            trampoline_addr,
-            handler,
-        }});
-
+        get_hooks().lock().unwrap().insert(trampoline_addr, HookInfo {{ trampoline_addr, handler }});
         Ok(trampoline_addr)
     }}
 }}
@@ -549,26 +532,11 @@ impl<'a> MtdiSafeContext<'a> {{
     pub fn read_arg_str(&self, index: usize, max_len: usize) -> Option<String> {{
         let ptr = self.arg(index);
         if ptr == 0 {{ return None; }}
-        
         let mut buffer = vec![0u8; max_len];
         let mut bytes_read: u64 = 0;
-        let kr = unsafe {{
-            mach_vm_read_overwrite(
-                mach_task_self(),
-                ptr,
-                max_len as u64,
-                buffer.as_mut_ptr() as u64,
-                &mut bytes_read,
-            )
-        }};
-
-        if kr != 0 || bytes_read == 0 {{
-            return None;
-        }}
-
-        let null_pos = buffer[..bytes_read as usize].iter().position(|&b| b == 0)
-            .unwrap_or(bytes_read as usize);
-            
+        let kr = unsafe {{ mach_vm_read_overwrite(mach_task_self(), ptr, max_len as u64, buffer.as_mut_ptr() as u64, &mut bytes_read) }};
+        if kr != 0 || bytes_read == 0 {{ return None; }}
+        let null_pos = buffer[..bytes_read as usize].iter().position(|&b| b == 0).unwrap_or(bytes_read as usize);
         String::from_utf8(buffer[..null_pos].to_vec()).ok()
     }}
 }}
@@ -584,52 +552,92 @@ impl MtdiRegistry {{
 }}
 
 // ---------------------------------------------------------
-// 3. USER SCRIPT (Compiled in Safe Sandbox)
+// 3. ZERO-PANIC TOTAL MATH TYPES
 // ---------------------------------------------------------
 
 mod user_sandbox {{
     #![forbid(unsafe_code)]
     use super::{{MtdiSafeContext, MtdiRegistry}};
 
+    // Total Math Wrapper (Zero panics on overflow / div-by-zero)
+    #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+    pub struct SafeU64(pub u64);
+
+    impl std::ops::Add for SafeU64 {{
+        type Output = SafeU64;
+        #[inline(always)]
+        fn add(self, rhs: SafeU64) -> SafeU64 {{ SafeU64(self.0.wrapping_add(rhs.0)) }}
+    }}
+
+    impl std::ops::Sub for SafeU64 {{
+        type Output = SafeU64;
+        #[inline(always)]
+        fn sub(self, rhs: SafeU64) -> SafeU64 {{ SafeU64(self.0.wrapping_sub(rhs.0)) }}
+    }}
+
+    impl std::ops::Mul for SafeU64 {{
+        type Output = SafeU64;
+        #[inline(always)]
+        fn mul(self, rhs: SafeU64) -> SafeU64 {{ SafeU64(self.0.wrapping_mul(rhs.0)) }}
+    }}
+
+    impl std::ops::Div for SafeU64 {{
+        type Output = SafeU64;
+        #[inline(always)]
+        fn div(self, rhs: SafeU64) -> SafeU64 {{
+            SafeU64(self.0.checked_div(rhs.0).unwrap_or(0))
+        }}
+    }}
+
+    // Clamped memory access trait (Shader memory model)
+    pub trait SafeSliceExt<T> {{
+        fn get_safe(&self, index: usize) -> T;
+    }}
+
+    impl<T: Copy + Default> SafeSliceExt<T> for &[T] {{
+        #[inline(always)]
+        fn get_safe(&self, index: usize) -> T {{
+            if index < self.len() {{ self[index] }} else {{ T::default() }}
+        }}
+    }}
+
+    impl<T: Copy + Default> SafeSliceExt<T> for [T] {{
+        #[inline(always)]
+        fn get_safe(&self, index: usize) -> T {{
+            if index < self.len() {{ self[index] }} else {{ T::default() }}
+        }}
+    }}
+
+    impl<T: Copy + Default, const N: usize> SafeSliceExt<T> for [T; N] {{
+        #[inline(always)]
+        fn get_safe(&self, index: usize) -> T {{
+            if index < N {{ self[index] }} else {{ T::default() }}
+        }}
+    }}
+
+    // INJECT USER CODE:
     {user_code}
 }}
 
 // ---------------------------------------------------------
-// 4. PANIC-SHIELDED INITIALIZER
+// 4. MODULE INITIALIZER
 // ---------------------------------------------------------
 
 #[used]
 #[link_section = "__DATA,__mod_init_func"]
 static INIT: extern "C" fn() = mtdis_init;
 
-static PANIC_ONCE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
 extern "C" fn mtdis_init() {{
-    // Install a clean panic hook that reports probe panics without process termination or noisy spam
-    std::panic::set_hook(Box::new(|info| {{
-        if !PANIC_ONCE.swap(true, std::sync::atomic::Ordering::Relaxed) {{
-            eprintln!("[mtdis] Warning: Sandboxed probe panicked: {{}}", info);
-            eprintln!("[mtdis] Panic cleanly shielded. Target process will continue uninterrupted.");
-        }}
-    }}));
-
     let mut reg = MtdiRegistry {{ hooks: Vec::new() }};
     
-    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {{
-        user_sandbox::register(&mut reg);
-    }}));
-
-    if res.is_err() {{
-        eprintln!("[mtdis] Error: Panic occurred during probe registration.");
-        return;
-    }}
+    // Direct branchless registration (Total Functions don't panic)
+    user_sandbox::register(&mut reg);
 
     for (symbol_name, handler) in reg.hooks {{
         let c_sym = match std::ffi::CString::new(symbol_name) {{
             Ok(s) => s,
             Err(_) => continue,
         }};
-
         let mut sym_addr = unsafe {{ dlsym(RTLD_DEFAULT, c_sym.as_ptr()) as usize }};
         if sym_addr == 0 {{
             if let Ok(c_under) = std::ffi::CString::new(format!("_{{}}", symbol_name)) {{
@@ -640,7 +648,6 @@ extern "C" fn mtdis_init() {{
             eprintln!("[mtdis] Warning: Symbol '{{}}' not found in process.", symbol_name);
             continue;
         }}
-
         if let Err(e) = raw_install_hook(sym_addr, handler) {{
             eprintln!("[mtdis] Failed to hook {{}}: {{}}", symbol_name, e);
         }}

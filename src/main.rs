@@ -24,7 +24,7 @@ fn main() -> io::Result<()> {
 
     let dylib_path = if let Some(ref script_path) = parsed_args.script_file {
         println!("[mtdis] Verifying and compiling safe probe: {}...", script_path);
-        match script::compiler::compile_script(Path::new(script_path)) {
+        match script::compiler::compile_script(Path::new(script_path), parsed_args.legacy_unwind) {
             Ok(path) => {
                 println!("[mtdis] Successfully compiled sandboxed probe to {}", path.display());
                 path

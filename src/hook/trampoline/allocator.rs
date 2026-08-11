@@ -11,7 +11,7 @@ static TRAMPOLINE_OFFSET: AtomicUsize = AtomicUsize::new(0);
 const PAGE_SIZE: usize = 16384; // 16KB on Apple Silicon
 
 pub fn allocate_trampoline(size: usize) -> usize {
-    let mut base = TRAMPOLINE_BASE.load(Ordering::SeqCst);
+    let mut base = TRAMPOLINE_BASE.load(Ordering::Acquire);
     
     if base == 0 {
         let mut addr: mach_vm_address_t = 0;
@@ -19,7 +19,7 @@ pub fn allocate_trampoline(size: usize) -> usize {
             mach_vm_allocate(mach_task_self() as task_name_t, &mut addr, PAGE_SIZE as u64, 1);
         }
         
-        match TRAMPOLINE_BASE.compare_exchange(0, addr as usize, Ordering::SeqCst, Ordering::SeqCst) {
+        match TRAMPOLINE_BASE.compare_exchange(0, addr as usize, Ordering::Release, Ordering::Relaxed) {
             Ok(_) => {
                 base = addr as usize;
             },
@@ -29,7 +29,7 @@ pub fn allocate_trampoline(size: usize) -> usize {
         }
     }
     
-    let offset = TRAMPOLINE_OFFSET.fetch_add(size, Ordering::SeqCst);
+    let offset = TRAMPOLINE_OFFSET.fetch_add(size, Ordering::Relaxed);
     if offset + size > PAGE_SIZE {
         panic!("Out of trampoline memory!");
     }

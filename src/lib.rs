@@ -20,14 +20,15 @@ static mut INIT_TIMEOFDAY_USEC: u64 = 0;
 static mut INIT_MACH_TIME: u64 = 0;
 
 
+#[repr(align(128))]
 pub struct Slot {
-    pub ready: AtomicBool,
     pub timestamp: u64,
     pub formatter: Option<fn(&Slot, bool, bool, &mut core::fmt::Formatter) -> core::fmt::Result>,
     pub args: [u64; 6],
     pub str1_len: usize,
     pub str2_len: usize,
     pub str_data: [u8; 1024],
+    _pad: [u8; 48],
 }
 
 impl Slot {
@@ -58,9 +59,12 @@ const MAX_THREADS: usize = 128;
 const QUEUE_SIZE: usize = 1024;
 const MASK: usize = QUEUE_SIZE - 1;
 
+#[repr(align(128))]
 pub struct ThreadQueue {
+    pub ready: [core::sync::atomic::AtomicU8; QUEUE_SIZE],
     pub slots: [Slot; QUEUE_SIZE],
     pub write_head: usize,
+    _pad: [u8; 120],
 }
 
 static mut THREAD_QUEUES: *mut ThreadQueue = ptr::null_mut();
@@ -272,7 +276,7 @@ static INITIALIZE: unsafe extern "C" fn() = {
                             let slot_idx = read_idx & MASK;
                             let slot = &mut q.slots[slot_idx];
                             
-                            if !slot.ready.load(Ordering::Acquire) {
+                            if q.ready[slot_idx].load(Ordering::Acquire) == 0 {
                                 break;
                             }
                             idle = false;
@@ -280,7 +284,13 @@ static INITIALIZE: unsafe extern "C" fn() = {
                         let is_ecs = ECS_OUTPUT.load(Ordering::Relaxed);
                         
                         let delta_mach = slot.timestamp.saturating_sub(INIT_MACH_TIME);
-                        let delta_ns = delta_mach * (TIMEBASE.numer as u64) / (TIMEBASE.denom as u64);
+                        let num = TIMEBASE.numer as u64;
+                        let den = TIMEBASE.denom as u64;
+                        let delta_ns = if num == 125 && den == 3 {
+                            (delta_mach * 125) / 3
+                        } else {
+                            delta_mach * num / den
+                        };
                         let current_usec = INIT_TIMEOFDAY_USEC + (delta_ns / 1000);
                         let sec = current_usec / 1_000_000;
                         let usec = current_usec % 1_000_000;
@@ -314,7 +324,7 @@ static INITIALIZE: unsafe extern "C" fn() = {
                         let len = 4096 - slice.len();
                         libc::write(LOG_FD.load(Ordering::Relaxed), buf.as_ptr() as *const libc::c_void, len);
                         
-                        slot.ready.store(false, Ordering::Release);
+                        q.ready[slot_idx].store(0, Ordering::Release);
                         read_idx += 1;
                         }
                         read_heads[i] = read_idx;
@@ -486,7 +496,7 @@ fn push_binary_event(
             let slot_idx = write_idx & MASK;
             let slot = &mut q.slots[slot_idx];
             
-            if slot.ready.load(Ordering::Acquire) {
+            if q.ready[slot_idx].load(Ordering::Acquire) != 0 {
                 return; // Queue is full, drop event
             }
             
@@ -514,7 +524,7 @@ fn push_binary_event(
             }
             
             q.write_head = write_idx + 1;
-            slot.ready.store(true, Ordering::Release);
+            q.ready[slot_idx].store(1, Ordering::Release);
         }
     }
 }
@@ -995,14 +1005,14 @@ pub unsafe extern "C" fn mtrace_log(msg: *const libc::c_char) {
             let slot_idx = write_idx & MASK;
             let slot = &mut q.slots[slot_idx];
             
-            if slot.ready.load(Ordering::Acquire) {
+            if q.ready[slot_idx].load(Ordering::Acquire) != 0 {
                 return; // Queue is full, drop event
             }
             
             ptr::copy_nonoverlapping(msg as *const u8, slot.str_data.as_mut_ptr(), copy_len);
             slot.str1_len = copy_len;
             q.write_head = write_idx + 1;
-            slot.ready.store(true, Ordering::Release);
+            q.ready[slot_idx].store(1, Ordering::Release);
         } else {
             ptr::copy_nonoverlapping(msg as *const u8, buf.as_mut_ptr(), copy_len);
             libc::write(LOG_FD.load(Ordering::Relaxed), buf.as_ptr() as *const libc::c_void, copy_len);

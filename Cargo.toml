@@ -7,6 +7,9 @@ edition = "2021"
 libc = "0.2"
 mach2 = "0.4"
 lazy_static = "1.4.0"
+syn = { version = "3.0.3", features = ["full", "visit"] }
+quote = "1.0.47"
+proc-macro2 = "1.0.107"
 
 [lib]
 name = "mactrace_lib"
