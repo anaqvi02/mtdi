@@ -216,7 +216,7 @@ and `cargo run --release --bin bench_cold` (cache-thrashed worst case):
 
 `bench_cold` adds worst-case cache/BTB pressure and first-call effects. Real probe work (string decoding, formatting, I/O) stacks on top, but stays off the hot path — the logging hot path is an allocation-free ring-buffer write.
 
-Given this, it's not hyperbole to say that this is the FASTEST DI Engine ever made. 
+Given this, it's fair to call it one of the fastest DI engines in existence — ns-scale hooks on Apple Silicon, orders of magnitude off anything interpreter-based, and comparable to the fastest native detour engines around.
 
 ## Compatibility
 
