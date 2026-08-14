@@ -62,7 +62,10 @@ pub fn install_hook(name: &str, target_addr: usize, hook_type: HookType) -> Resu
         }
     };
 
-    unsafe { overwrite_with_jump(target_addr, jump_target) };
+    match unsafe { overwrite_with_jump(target_addr, jump_target) } {
+        Ok(_) => {}
+        Err(e) => return Err(e),
+    }
 
     hooks.insert(trampoline_addr, HookInfo {
         name: name.to_string(),

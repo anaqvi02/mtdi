@@ -265,9 +265,9 @@ const VM_PROT_WRITE: i32 = 0x02;
 const VM_PROT_EXECUTE: i32 = 0x04;
 const VM_PROT_COPY: i32 = 0x10;
 
-unsafe fn unprotect_page(addr: usize) {{
+unsafe fn unprotect_page(addr: usize) -> i32 {{
     let page_addr = (addr & !0x3FFF) as u64;
-    mach_vm_protect(mach_task_self(), page_addr, 0x4000, 0, VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY);
+    mach_vm_protect(mach_task_self(), page_addr, 0x4000, 0, VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY)
 }}
 
 unsafe fn protect_page(addr: usize) {{
@@ -491,7 +491,10 @@ fn raw_install_hook(target_addr: usize, handler: fn(&mut MtdiSafeContext)) -> Re
         sys_icache_invalidate(stub_addr as *mut _, 32);
         protect_page(stub_addr);
 
-        unprotect_page(target_addr);
+        let kr = unprotect_page(target_addr);
+        if kr != 0 {{
+            return Err(format!("cannot unprotect page at {{:#x}} (PPL-protected shared-cache page?)", target_addr));
+        }}
         if is_near {{
             std::ptr::copy_nonoverlapping(make_branch_26(target_addr, stub_addr).to_le_bytes().as_ptr(), target_addr as *mut u8, 4);
             sys_icache_invalidate(target_addr as *mut _, 4);
