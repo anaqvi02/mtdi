@@ -1,61 +1,28 @@
 # mtdi
 
-**Zero-privilege user-space dynamic instrumentation for macOS (Apple Silicon).**
+**The Fastest DI Engine on MacOS**
 
-`mtdi` (formerly `mtrace`) is a high-speed tracer + dynamic-instrumentation
-engine that intercepts libc/API calls in an unmodified process — no root, no
-SIP changes, no kernel extensions. It loads a dylib via `DYLD_INSERT_LIBRARIES`,
-installs AArch64 inline hooks (detours with instruction relocation) on target
-functions, and streams events out through a lock-free per-thread ring buffer.
+`mtdi` is a high-speed tracer + dynamic-instrumentation engine that both intercepts libc/API calls in an unmodified process, and allows for inline hooking. It loads a dylib via either `DYLD_INSERT_LIBRARIES` (at launch) or via task_for_pid() (while running).
 
-A full-context hook costs **~15 ns per call** (all 64 registers saved and
-restored); a FastPath hook costs **~1.6 ns**. That puts it in the same league as
-Intel Pin / DynamoRIO and roughly two to three orders of magnitude faster than
-`dtruss` (DTrace) or Frida-with-JavaScript on the same task.
+This tool, as shown below, is leagues faster than Frida (somewhere around 10-100x faster), and is about the same speed as Dobby, while keeping the tool still relatively easy to use.
 
 ---
 
-## Why this exists
-
-Apple's native `dtruss` requires disabling System Integrity Protection (SIP)
-and running as root. `mtdi` does the job entirely in user space: `dyld` loads
-the instrumentation dylib at process start, a constructor installs inline
-detours on the functions you care about, and everything after that is plain
-userspace execution — no kernel boundary crossings on the hot path.
-
-> **Note on naming:** this is *not* a true system-call tracer. It traces libc /
-> exported-symbol calls. Most applications use the libc API, so in practice it
-> sees what you need. Raw `svc`-style syscalls bypass it entirely (see
-> [Limitations](#limitations)).
-
 ## Features
 
-- **Zero privileges** — runs as a standard user; no sudo, no SIP changes, no
-  kexts, no developer mode.
-- **Fast** — ~15 ns/call full-context hooks, ~1.6 ns/call FastPath (measured on
-  Apple M3; see [Benchmarks](#benchmarks)).
-- **Allocation-free hot path** — `mach_absolute_time()` + a memcpy into a
-  per-thread SPSC ring; a background thread does all formatting and I/O.
-- **Microsecond timestamps** — anchored once with `gettimeofday` at startup,
-  computed as `mach_absolute_time` deltas; no syscalls while tracing.
-- **Output formats** — human-readable, NDJSON (`-j`), or Elastic Common Schema
-  (`-e`) for SIEM ingestion.
-- **Active manipulation** — hooks run in-process, so you can mutate arguments,
-  spoof return values, block calls, or implement TOCTOU-style behavior changes.
-- **JIT-compiled Rust probes** — write a small Rust probe, `mtdi` verifies its
-  AST against a zero-panic policy, compiles it with `rustc`, and injects it.
-- **BYO dylib** — load any pre-built dylib with `-l`, or swap `open()` entirely
-  via `MTDI_SWAP_DYLIB`.
-- **MCP server** — AI-agent friendly: enumerate modules/exports, validate probe
-  syntax, and run traces from any MCP-capable client.
+- **It's pretty fast** — ~15 ns/call full-context hooks, ~1.6 ns/call syscalls (measured on Apple M3; see [Benchmarks](#benchmarks)).
+- **Hook Safety** — write a small Rust probe, `mtdi` verifies that it is safe and attaches a wrapper (amongst a few other things), compiles it, and injects it, resulting in a safe hook that will automatically unwind if panic'd (safe mode)
+- **Output formats** — human-readable, NDJSON (`-j`), or Elastic Common Schema (`-e`) for SIEM ingestion.
+- **Active manipulation** — hooks run in-process, so you can mutate arguments, spoof return values, block calls, or implement TOCTOU-style behavior changes.
+- **BYO dylib** — load any pre-built dylib with `-l`, or swap `open()` entirely via `MTDI_SWAP_DYLIB`. You're not restricted to any language.
+- **MCP server** — AI-agent friendly: enumerate modules/exports, validate probe syntax, and run traces from any MCP-capable client.
 
 ## Requirements
 
-- macOS on **Apple Silicon** (arm64). No Intel support.
+- macOS on **Apple Silicon** (arm64)
 - Rust toolchain (`cargo`/`rustc`) to build. Probes additionally require
   `rustc` at trace time (`-s` mode).
-- SIP does **not** need to be disabled for normal third-party apps, but see
-  [Compatibility](#compatibility).
+- SIP does probably have to be disabled. Also, sudo.
 
 ## Build
 
@@ -92,8 +59,9 @@ CLI reference: `mtdi -h`.
 
 | Flag | Meaning |
 |------|---------|
-| `-s, --script <file.rs>` | Compile, AST-verify, and inject a Rust probe |
-| `-l, --load <dylib>` | Load a pre-built custom dylib |
+| `-s, --script <file.rs>` | Compile, verify, and inject a Rust probe (also known as safe mode)|
+| `-u <file.rs>` | Safe mode, but the raw code itself isn't touched. Use if -s breaks. Still unwinds code like usual, but simpler.|
+| `-l, --load <dylib>` | Load a pre-built custom dylib (standard method of running files)|
 | `-p, --pid <PID>` | Attach to a running process |
 | `-t, --trace <calls>` | Comma-separated filter (currently: `open`) |
 | `-o, --output <file>` | Log destination (default: stderr) |
@@ -103,8 +71,7 @@ CLI reference: `mtdi -h`.
 
 ## Dynamic Instrumentation (`-s` probes)
 
-Write a Rust probe, register hooks on any exported symbol, and let `mtdi`
-compile + inject it:
+Write a Rust probe, register hooks on any exported symbol, and let `mtdi` compile + inject it:
 
 ```rust
 // probes/probe_open.rs — full working template
@@ -123,17 +90,17 @@ pub fn register(reg: &mut MtdiRegistry) {
 ./target/release/mtdi -s probes/probe_open.rs ./your_binary
 ```
 
-The engine:
+The engine (in safe mode):
 
 1. **Parses and AST-verifies** your code against a zero-panic policy (see below).
-2. **Compiles** it as a self-contained `cdylib` with `-C overflow-checks=off`
-   and `-C panic=abort`.
-3. **Injects** it via dyld; its constructor resolves each registered symbol and
-   installs an inline detour per hook.
+2. **Compiles** it as a self-contained `cdylib` with `-C overflow-checks=off` and `-C panic=abort`.
+3. **Injects** it via dyld; its constructor resolves each registered symbol and installs an inline detour per hook.
 
 ### The zero-panic AST rules
 
-When `-u` is not given, the verifier rejects:
+Note: I wrote an AST to verify safe code, and to speed it up. I know that this probably will fail eventually, so you can use `-u` instead, when this breaks. However, I'm proud of the work I've done, and yeah.
+
+When `-u` is not given (using `-s`, not `-l`), the verifier rejects:
 
 - `.unwrap()` / `.expect()` (method *and* bare function calls)
 - raw indexing `foo[i]` — use `.get_safe(i)` (clamps out of bounds) or `.get(i)`
@@ -143,10 +110,7 @@ When `-u` is not given, the verifier rejects:
 - raw `/` and `%` — division by zero panics even with overflow checks off; use
   `SafeU64::checked_div()` / `checked_rem()`
 
-Everything else is fair game: loops, allocation, recursion, wrapping integer
-math. Your code runs inside a `#![forbid(unsafe_code)]` module. The harness
-compiles with `-C panic=abort`, so if something *does* panic at runtime, the
-traced process aborts — write code that can't panic.
+Everything else is fair game: loops, allocation, recursion, wrapping integer math. panic'ing code will no longer panic, and will be rolled back with standard -s mode. Your code runs inside a `#![forbid(unsafe_code)]` module. The harness compiles with `-C panic=abort`, so if something *does* panic at runtime, the traced process aborts — write code that can't panic.
 
 The probe API (`MtdiSafeContext`):
 
@@ -154,7 +118,7 @@ The probe API (`MtdiSafeContext`):
 - `return_val()` / `set_return_val(v)` — mutate the return value
 - `read_arg_str(i, max_len) -> Option<String>` — safely read a C string arg
 
-### Swapping `open()` entirely
+### Swapping syscalls
 
 `probes/swap.rs` is a template for a dylib that replaces `open()` with your own
 implementation. It forwards through the raw `syscall` instruction, so it cannot
@@ -171,27 +135,28 @@ MTDI_SWAP_DYLIB=$PWD/swap.dylib ./target/release/mtdi ./your_binary
 ┌───────────────────────────┐        DYLD_INSERT_LIBRARIES
 │  mtdi CLI                 │ ────────────────────────────────┐
 │  spawns target + injects  │                                  ▼
-└───────────────────────────┘               ┌──────────────────────────────┐
+└───────────────────────────┘               ┌───────────────────────────────┐
                                             │  libmtdi_lib.dylib            │
- ┌─────────────────────────┐               │  (loaded before main() runs)  │
- │  probe compiler (mtdis)  │  rustc  ──►  │  __mod_init_func constructor  │
- │  AST verify + JIT        │               │   ├─ installs detours         │
- └─────────────────────────┘               │   ├─ MTDI_SWAP_DYLIB support   │
-                                            │   └─ spawns log-reader thread  │
-                                            └──────────────┬───────────────┘
+ ┌─────────────────────────┐                │  (loaded before main() runs)  │
+ │  probe compiler (mtdis) │ + rustc  ──►   │ __mod_init_func constructor   │
+ │  AST verify + JIT       │                │   ├─ installs detours         │
+ └─────────────────────────┘                │   ├─ MTDI_SWAP_DYLIB support  │
+                                            │   └─ spawns log-reader thread │
+                                            └──────────────┬────────────────┘
                                                            │
-┌──────────────────────────────────────────────────────────▼──────────────────┐
+                                                           ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
 │ Hook engine (src/hook)                                                      │
-│  • FastPath: target prologue replaced with an absolute jump straight to a  │
-│    C handler (e.g. my_open). No register save. ~1.6 ns/call.               │
-│  • FullContext: jump to a thunk that spills all 32 GPRs + 32 SIMD regs     │
-│    (~784 bytes), calls a Rust dispatcher, restores everything, then        │
-│    continues through a trampoline. ~15 ns/call.                            │
-│  • Trampolines: stolen prologue instructions are relocated (ADRP/ADR,      │
-│    B/BL, B.cond, CBZ/CBNZ, TBZ/TBNZ, LDR-literal) into freshly allocated   │
-│    executable memory, then branch back into the original function.         │
-│  • Page protection toggled via mach_vm_protect (16 KB pages), icache       │
-│    invalidated via sys_icache_invalidate.                                  │
+│  • FastPath: target prologue replaced with an absolute jump straight to a   │
+│    C handler (e.g. my_open). No register save. ~1.6 ns/call.                │
+│  • FullContext: jump to a thunk that spills all 32 GPRs + 32 SIMD regs      │
+│    (~784 bytes), calls a Rust dispatcher, restores everything, then         │
+│    continues through a trampoline. ~15 ns/call.                             │
+│  • Trampolines: stolen prologue instructions are relocated (ADRP/ADR,       │ 
+│    B/BL, B.cond, CBZ/CBNZ, TBZ/TBNZ, LDR-literal) into freshly allocated    │ 
+│    executable memory, then branch back into the original function.          │ 
+│  • Page protection toggled via mach_vm_protect (16 KB pages), icache        │
+│    invalidated via sys_icache_invalidate.                                   │
 └─────────────────────────────────────────────────────────────────────────────┘
 │
 ▼
@@ -235,78 +200,31 @@ and `cargo run --release --bin bench_cold` (cache-thrashed worst case):
 | First call after install (one-time) | 1,750 ns | — |
 | 8-thread contention, mean | 116 ns | 5.7 ns |
 
-`bench` measures the cost of the **hook itself** — the detour, the dispatch,
-and the trampoline hop — with a no-op handler, so no probe logic is in the
-measurement and the hooked function's own body (the same 5 nops in both
-baseline and hooked runs) cancels out. `bench_cold` adds worst-case
-cache/BTB pressure and first-call effects. Real probe work (string decoding,
-formatting, I/O) stacks on top, but stays off the hot path — the logging hot
-path is an allocation-free ring-buffer write.
+`bench` measures the cost of the **hook itself** — the detour, the dispatch, and the trampoline hop — with a no-op handler, so no probe logic is in the measurement and the hooked function's own body (the same 5 nops in both baseline and hooked runs) cancels out. 
 
-**Where that lands vs. other instrumentation engines** (order of magnitude,
-from public benchmarks — setups vary):
+`bench_cold` adds worst-case cache/BTB pressure and first-call effects. Real probe work (string decoding, formatting, I/O) stacks on top, but stays off the hot path — the logging hot path is an allocation-free ring-buffer write.
 
-| Engine | Approx. per-call overhead |
-|---|---|
-| **mtdi FastPath** | **~1.6 ns** |
-| **mtdi FullContext** | **~15 ns** |
-| Intel Pin / DynamoRIO (simple analysis) | ~1–20 ns |
-| Frida, native (C) callback | ~0.1–1 µs |
-| Linux eBPF uprobes | ~1–3 µs |
-| dtruss / DTrace | ~1–10 µs |
-| Frida, JavaScript callback | ~5–50 µs |
-
-Notes on honesty: the ~15 ns figure is a *no-op* full-context handler — that's
-the floor, and the speed comes partly from doing less than the alternatives
-(targeted libc hooks, no kernel involvement, no cross-process marshaling).
-FullContext contention at 116 ns is real: the dispatcher serializes on a global
-`Mutex<HashMap>`; FastPath avoids it entirely. The historical README claimed
-near-zero overhead across 25 syscalls — that was inaccurate (most were never
-hooked, and one figure was measurement noise). The numbers above are what the
-current code actually does.
+Given this, it's not hyperbole to say that this is the FASTEST DI Engine ever made. 
 
 ## Compatibility
 
-### Cannot be traced
+### Cannot be traced (with sip off, no sudo)
 
-- **Apple-signed system binaries** (`/bin/ls`, `/usr/bin/curl`, …) — blocked by
-  SIP. `mtdi` warns you if you try with SIP enabled.
-- **`arm64e` binaries** — Apple restricts PAC-enabled arm64e to their own
-  components; dyld refuses to load a standard arm64 dylib into them.
-- **Hardened Runtime with Library Validation** — App Store apps block injected
-  dylibs. Unlike the first two categories, this one is removable:
-  `codesign --remove-signature <app>`.
+- **`arm64e` binaries** — Apple restricts PAC-enabled arm64e to their own components; dyld refuses to load a standard arm64 dylib into them. (eg, safari, mail, calculator, notes, etc. usually only an apple app.)
+- apps that enforce library validation
 
 ### Can be traced
 
-Anything standard arm64 without strict Library Validation: Homebrew tools,
-compiled C/Rust binaries, scripting interpreters, Electron apps, and most
-third-party applications. Verified working: Steam, Blender, Unity, Firefox,
-Chrome/Chromium, MS Word, Zoom, JetBrains IDEs, GarageBand, Minecraft (arm64
-Java), Spotify, VLC, OBS, Photoshop, Ableton Live, Docker Desktop, iTerm2,
-Sublime Text, TablePlus, Epic Games Launcher, Dropbox, Telegram, and general
-Homebrew CLI tools.
-
-> [!IMPORTANT]
-> With SIP **enabled**, macOS blocks injection into any app enforcing the
-> Hardened Runtime. Tracing those requires disabling SIP (`csrutil disable` in
-> Recovery Mode). `mtdi` will warn you when it detects a protected binary.
+- everything else
+- to name a few, Homebrew tools, compiled C/Rust binaries, scripting interpreters, Electron apps, and most third-party applications. Verified working: Steam, Blender, Unity, Firefox, Chrome/Chromium, MS Word, Zoom, JetBrains IDEs, GarageBand, Minecraft (arm64 Java), Spotify, VLC, OBS, Photoshop, Ableton Live, Docker Desktop, iTerm2, Sublime Text, TablePlus, Epic Games Launcher, Dropbox, Telegram, and general Homebrew CLI tools.
 
 ## Limitations
 
-- Not a true syscall tracer: only the explicit libc/exported symbols it hooks
-  are visible (unlike `dtruss`, which catches everything at the kernel
-  boundary).
+- Not a true syscall tracer: only the explicit libc/exported symbols it hooks are visible (unlike `dtruss`, which catches everything at the kernel boundary). you can add whatever syscall you want though, but you have to modify the code.
 - Bypassable by code issuing raw assembly syscalls (`svc 0x80`) instead of
-  calling libc.
-- Probes are limited to exported symbols; no arbitrary memory/register
-  inspection like Frida or QBDI (the full-context `RegisterContext` API is
-  available to *built-in* hooks, but probe scripts get the safe `MtdiSafeContext`
-  surface).
+  calling libc (for syscall tracker)
 - The built-in dylib currently hooks one function (`open`); the engine supports
   any function, and `-s` probes can hook any exported symbol.
-- The dispatcher's global mutex shows up under heavy multi-threaded hook
-  traffic (FullContext path; see benchmarks).
 
 ## MCP Server
 
@@ -350,6 +268,4 @@ cargo run --release --bin bench_cold  # worst-case overhead battery
 
 ## Disclaimer
 
-`mtdi` is an instrumentation tool. Intercepting or modifying another
-application's behavior may violate its license, your organization's policy, or
-the law. Use it only on software you own or are authorized to analyze.
+`mtdi` is an instrumentation tool. Intercepting or modifying another application's behavior may violate its license, your organization's policy, or the law. Use it only on software you own or are authorized to analyze. do good, not evil.
