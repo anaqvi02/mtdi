@@ -8,26 +8,40 @@ from fastmcp import FastMCP
 mcp = FastMCP("MTDI")
 
 
+_BINARY_MTIME = None
+
+
 def _mtdi_binary() -> str:
     """Locate the mtdi CLI: $MTDI_BIN, then <repo>/target/release/mtdi, then PATH."""
+    global _BINARY_MTIME
     env = os.environ.get("MTDI_BIN")
     if env and os.path.exists(env):
-        return env
-    repo_relative = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "target",
-        "release",
-        "mtdi",
-    )
-    if os.path.exists(repo_relative):
-        return repo_relative
-    found = shutil.which("mtdi")
-    if found:
-        return found
-    raise FileNotFoundError(
-        "mtdi binary not found. Build it with `cargo build --release` in the repo "
-        "root, or point $MTDI_BIN at the built binary."
-    )
+        path = env
+    else:
+        repo_relative = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "target",
+            "release",
+            "mtdi",
+        )
+        if os.path.exists(repo_relative):
+            path = repo_relative
+        else:
+            found = shutil.which("mtdi")
+            if not found:
+                raise FileNotFoundError(
+                    "mtdi binary not found. Build it with `cargo build --release` in the repo "
+                    "root, or point $MTDI_BIN at the built binary."
+                )
+            path = found
+    mtime = os.path.getmtime(path)
+    if _BINARY_MTIME is not None and mtime != _BINARY_MTIME:
+        raise RuntimeError(
+            "The mtdi binary was rebuilt since this MCP server started "
+            "(stale engine). Restart the MCP server to pick up the new build."
+        )
+    _BINARY_MTIME = mtime
+    return path
 
 @mcp.tool()
 def list_processes(query: str = "") -> str:
@@ -59,7 +73,21 @@ def check_probe_syntax(script_code: str, legacy_unwind: bool = False) -> str:
         script_code: The Rust probe code to compile.
         legacy_unwind: If True, uses the -u flag to bypass AST verification.
     """
-    return trace_process(target="/bin/ls", script_code=script_code, duration_seconds=0, legacy_unwind=legacy_unwind)
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.rs', delete=False) as f:
+        f.write(script_code)
+        script_path = f.name
+    try:
+        cmd = [_mtdi_binary()]
+        if legacy_unwind:
+            cmd.append("-u")
+        cmd.extend(["--check-only", "-s", script_path])
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        return f"STDOUT:\n{proc.stdout}\n\nSTDERR:\n{proc.stderr}"
+    except Exception as e:
+        return f"Error checking probe syntax: {str(e)}"
+    finally:
+        if os.path.exists(script_path):
+            os.unlink(script_path)
 
 @mcp.tool()
 def trace_process(target: str, script_code: str, duration_seconds: int = 5, legacy_unwind: bool = False) -> str:
@@ -80,8 +108,16 @@ def trace_process(target: str, script_code: str, duration_seconds: int = 5, lega
         cmd = [_mtdi_binary()]
         if legacy_unwind:
             cmd.append("-u")
-        cmd.extend(["-s", script_path, str(target)])
-        
+        cmd.extend(["-s", script_path])
+        # Numeric targets are PIDs (-p attach); anything else is a program name.
+        attach_mode = str(target).strip().isdigit()
+        if attach_mode:
+            cmd.extend(["-p", str(target)])
+        else:
+            if not shutil.which(str(target)):
+                return f"Error: executable not found: {target}"
+            cmd.append(str(target))
+
         proc = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
@@ -97,7 +133,20 @@ def trace_process(target: str, script_code: str, duration_seconds: int = 5, lega
         proc.terminate()
         stdout, stderr = proc.communicate(timeout=2)
         
-        return f"STDOUT:\n{stdout}\n\nSTDERR:\n{stderr}"
+        result = f"STDOUT:\n{stdout}\n\nSTDERR:\n{stderr}"
+        if attach_mode:
+            # Attach events go to $TMPDIR/mtdi_<pid>.log (target stderr is
+            # usually /dev/null for GUI apps) — relay them here.
+            log_path = os.path.join(os.environ.get("TMPDIR", "/tmp"), f"mtdi_{target}.log")
+            if os.path.exists(log_path):
+                try:
+                    with open(log_path, "r", errors="replace") as f:
+                        result += f"\n\nTRACE LOG ({log_path}):\n{f.read()}"
+                except OSError as e:
+                    result += f"\n\n(no trace log relayed: {e})"
+            else:
+                result += f"\n\n(no trace log found at {log_path})"
+        return result
     except Exception as e:
         return f"Error tracing process: {str(e)}"
     finally:
@@ -113,9 +162,24 @@ def enumerate_modules(pid: int, filter_query: str = "") -> str:
         filter_query: Optional string to filter the modules (e.g. 'libSystem').
     """
     try:
-        result = subprocess.run(["lsof", "-p", str(pid)], capture_output=True, text=True)
-        lines = [line.split()[-1] for line in result.stdout.splitlines() if '.dylib' in line or '.framework' in line]
-        unique_lines = sorted(list(set(lines)))
+        # vmmap (not lsof): shows the MAIN binary plus every mapped image,
+        # which lsof's open-file list misses; also more stable column layout.
+        modules = set()
+        ps = subprocess.run(["ps", "-o", "comm=", "-p", str(pid)], capture_output=True, text=True)
+        main_bin = ps.stdout.strip()
+        if main_bin and os.path.exists(main_bin):
+            modules.add(main_bin)
+        result = subprocess.run(["vmmap", "-p", str(pid)], capture_output=True, text=True)
+        for line in result.stdout.splitlines():
+            toks = line.split()
+            path = None
+            for t in reversed(toks):
+                if t.startswith("/") and not t.startswith("//"):
+                    path = t.split("(")[0].strip()
+                    break
+            if path and (".dylib" in path or ".framework" in path):
+                modules.add(path)
+        unique_lines = sorted(modules)
         
         if filter_query:
             unique_lines = [l for l in unique_lines if filter_query.lower() in l.lower()]

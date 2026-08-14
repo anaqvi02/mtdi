@@ -13,7 +13,10 @@ pub extern "C" fn handle_signal(_sig: libc::c_int) {
     let pid = CHILD_PID.load(Ordering::Relaxed);
     if pid > 0 {
         unsafe {
-            libc::kill(pid as libc::pid_t, libc::SIGKILL);
+            // SIGTERM, not SIGKILL: the traced process's atexit drain (and,
+            // in launch mode, the dylib's SIGTERM handler) gets a chance to
+            // flush the ring before the child dies.
+            libc::kill(pid as libc::pid_t, libc::SIGTERM);
         }
     }
     unsafe { libc::_exit(1) }
@@ -52,6 +55,10 @@ fn main() -> io::Result<()> {
 
     if let Some(pid) = parsed_args.target_pid {
         injector::mach::inject_into_pid(pid, &dylib_path);
+    } else if parsed_args.check_only {
+        // --check-only: compile + verify the probe, never run it (used by the
+        // MCP server's check_probe_syntax; avoids injecting into /bin/ls).
+        println!("[mtdis] Check-only: probe compiles and passes verification.");
     } else {
         cli::spawn::spawn_target(parsed_args, &dylib_path)?;
     }

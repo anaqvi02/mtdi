@@ -29,25 +29,48 @@ fn has_dyld_entitlement(binary_path: &str) -> bool {
         .output()
         .unwrap_or_else(|_| Command::new("true").output().unwrap());
     let stdout = String::from_utf8_lossy(&output.stdout);
+    // disable-library-validation also lifts the DYLD_* env stripping for
+    // hardened binaries (e.g. Spotify carries only this one) — both count.
     stdout.contains("com.apple.security.cs.allow-dyld-environment-variables")
+        || stdout.contains("com.apple.security.cs.disable-library-validation")
 }
 
-fn check_sip_and_codesign(binary_path: &str) {
-    if !is_sip_enabled() { return; }
-    
-    if binary_path.starts_with("/bin/") || binary_path.starts_with("/usr/bin/") || binary_path.starts_with("/sbin/") || binary_path.starts_with("/usr/sbin/") || binary_path.starts_with("/System/") {
-        eprintln!("[mtdi] Oh look, SIP is enabled and you're trying to inject into an Apple system binary. Good luck with that.");
-        return;
+/// Hard-fails (instead of warning-and-continuing) when launch-time injection
+/// is impossible: SIP on + Apple system binary, or hardened runtime without
+/// either dyld entitlement. Both cases silently strip DYLD_INSERT_LIBRARIES,
+/// so a trace would run with zero hooks and the user would have no idea.
+fn check_sip_and_codesign(binary_path: &str) -> Result<(), String> {
+    if !is_sip_enabled() {
+        return Ok(());
     }
-    
+
+    if binary_path.starts_with("/bin/")
+        || binary_path.starts_with("/usr/bin/")
+        || binary_path.starts_with("/sbin/")
+        || binary_path.starts_with("/usr/sbin/")
+        || binary_path.starts_with("/System/")
+    {
+        return Err(format!(
+            "SIP is enabled and '{}' is an Apple system binary: DYLD_INSERT_LIBRARIES is stripped, launch-time injection cannot work.",
+            binary_path
+        ));
+    }
+
     if has_hardened_runtime(binary_path) && !has_dyld_entitlement(binary_path) {
-        eprintln!("[mtdi] Oh look, SIP is enabled and this binary enforces the Hardened Runtime. Good luck with that.");
+        return Err(format!(
+            "'{}' enforces the Hardened Runtime without allow-dyld-environment-variables or disable-library-validation: DYLD_INSERT_LIBRARIES will be stripped.",
+            binary_path
+        ));
     }
+    Ok(())
 }
 
 pub fn spawn_target(args: AppArgs, dylib_path: &Path) -> std::io::Result<()> {
     let cmd_name = args.cmd_name.unwrap();
-    check_sip_and_codesign(&cmd_name);
+    if let Err(msg) = check_sip_and_codesign(&cmd_name) {
+        eprintln!("[mtdi] {}", msg);
+        return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, msg));
+    }
 
     let mut cmd = Command::new(&cmd_name);
     cmd.args(&args.cmd_args);
@@ -65,6 +88,9 @@ pub fn spawn_target(args: AppArgs, dylib_path: &Path) -> std::io::Result<()> {
     if args.ecs_output {
         cmd.env("MTDI_ECS", "1");
     }
+    // Launch mode: the dylib may take over SIGTERM so a Ctrl-C (forwarded by
+    // the CLI) drains the ring instead of killing the trace mid-flight.
+    cmd.env("MTDI_OWN_SIGTERM", "1");
 
     let mut child = cmd.spawn()?;
     CHILD_PID.store(child.id(), Ordering::Relaxed);

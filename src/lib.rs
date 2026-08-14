@@ -161,6 +161,36 @@ static INITIALIZE: unsafe extern "C" fn() = {
             if fd >= 0 {
                 LOG_FD.store(fd, Ordering::Relaxed);
             }
+        } else if unsafe { libc::getenv(c"MTDI_OWN_SIGTERM".as_ptr()) }.is_null()
+            && unsafe { libc::isatty(2) } == 0
+        {
+            // Attach mode (no launch env): a GUI target's stderr is usually
+            // /dev/null, so route the trace to a file we can actually find.
+            // Launch mode always keeps the inherited stderr — the user chose
+            // that destination (possibly a redirect).
+            let tmp = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".into());
+            let path = format!("{}/mtdi_{}.log", tmp, unsafe { libc::getpid() });
+            if let Ok(cpath) = std::ffi::CString::new(path) {
+                let fd = unsafe {
+                    libc::open(
+                        cpath.as_ptr(),
+                        libc::O_CREAT | libc::O_WRONLY | libc::O_APPEND | libc::O_CLOEXEC,
+                        0o666,
+                    )
+                };
+                if fd >= 0 {
+                    LOG_FD.store(fd, Ordering::Relaxed);
+                }
+            }
+        }
+
+        // Attach mode (no MTDI_OWN_SIGTERM — only launch mode sets it): say
+        // up front that PID attach can't cover the PPL-sealed syscalls.
+        if unsafe { libc::getenv(c"MTDI_OWN_SIGTERM".as_ptr()) }.is_null() {
+            unsafe {
+                mtdi_log(c"[mtdi] Note: PID attach hooks only the PPL-writable syscalls (~8 of 25 on macOS 26). Full 25/25 syscall tracing requires launch-time tracing with DYLD_INTERPOSE (`mtdi <cmd>`).\n".as_ptr());
+                mtdi_log(c"[mtdi] Things will break if you try to trace syscalls anyways with PID attaching.\n".as_ptr());
+            }
         }
 
         let env_filter = c"MTDI_FILTER".as_ptr();
@@ -327,6 +357,14 @@ static INITIALIZE: unsafe extern "C" fn() = {
             }
         });
         libc::atexit(flush_on_exit);
+        // Launch mode only (see cli/spawn.rs): take over SIGTERM so a Ctrl-C
+        // drains the ring instead of truncating the trace. Attach mode leaves
+        // the target's own signal handlers untouched.
+        if !unsafe { libc::getenv(c"MTDI_OWN_SIGTERM".as_ptr()) }.is_null() {
+            unsafe {
+                libc::signal(libc::SIGTERM, handle_terminate as usize);
+            }
+        }
     }
     init
 };
@@ -501,6 +539,18 @@ extern "C" fn flush_on_exit() {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
+/// Launch-mode SIGTERM handler (enabled via MTDI_OWN_SIGTERM): drains the ring
+/// like the atexit path, then re-raises with the default disposition so the
+/// process still dies with the conventional status. A Ctrl-C on the CLI
+/// forwards SIGTERM here, so the tail of the trace survives.
+extern "C" fn handle_terminate(_sig: libc::c_int) {
+    flush_on_exit();
+    unsafe {
+        libc::signal(libc::SIGTERM, libc::SIG_DFL);
+        libc::raise(libc::SIGTERM);
     }
 }
 

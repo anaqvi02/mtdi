@@ -11,6 +11,7 @@ pub struct AppArgs {
     pub json_output: bool,
     pub ecs_output: bool,
     pub legacy_unwind: bool,
+    pub check_only: bool,
 }
 
 pub fn parse_args() -> AppArgs {
@@ -26,6 +27,7 @@ pub fn parse_args() -> AppArgs {
         json_output: false,
         ecs_output: false,
         legacy_unwind: false,
+        check_only: false,
     };
 
     if args.is_empty() {
@@ -78,6 +80,9 @@ pub fn parse_args() -> AppArgs {
         } else if args[0] == "-u" || args[0] == "--legacy-unwind" {
             args.remove(0);
             parsed.legacy_unwind = true;
+        } else if args[0] == "--check-only" || args[0] == "-c" {
+            args.remove(0);
+            parsed.check_only = true;
         } else if args[0] == "-h" || args[0] == "-help" || args[0] == "--help" {
             print_help();
             std::process::exit(0);
@@ -90,7 +95,7 @@ pub fn parse_args() -> AppArgs {
         }
     }
 
-    if parsed.target_pid.is_none() {
+    if parsed.target_pid.is_none() && !parsed.check_only {
         if args.is_empty() {
             eprintln!("Error: No command specified to trace.");
             std::process::exit(1);

@@ -62,7 +62,7 @@ CLI reference: `mtdi -h`.
 | `-s, --script <file.rs>` | Compile, verify, and inject a Rust probe (also known as safe mode)|
 | `-l, --load <dylib>` | Load a pre-built custom dylib |
 | `-p, --pid <PID>` | Attach to a running process (see [Attaching](#attaching-to-a-target)) |
-| `-t, --trace <calls>` | Comma-separated filter over the 25 built-in syscalls (e.g. `open,close,read,mmap`) |
+| `-t, --trace <calls>` | Comma-separated filter over the 25 built-in syscalls (e.g. `open,close,read,mmap`). In-place coverage on macOS 26 is 8 of 25 due to PPL — see [Limitations](#limitations) |
 | `-o, --output <file>` | Log destination (default: stderr) |
 | `-j, --json` | NDJSON output |
 | `-e, --ecs` | Elastic Common Schema output |
@@ -77,9 +77,14 @@ Two ways to get the dylib into a process:
   loads before `main()` runs. Simplest path, and the only path that can reach
   the PPL-sealed syscalls on macOS 26 (see [Limitations](#limitations)).
 - **While it's running** — `mtdi -p <PID>`: injects via `task_for_pid()` + a
-  remote thread. No relaunch needed, but the target must be debuggable by you
-  (same user, or root with SIP off), and the PPL-sealed syscalls can't be
-  covered this way.
+  remote thread, and the injector first boots that thread into a real pthread
+  (`pthread_create_from_mach_thread`) so dyld4's dlopen can run on it —
+  a raw mach thread has no TLS and crashes dyld4 (fixed, verified). The target
+  must be debuggable by you (same user, or root with SIP off; macOS may show a
+  one-time "…wants to control this process" consent prompt — click Allow, it is
+  not a hang), and the PPL-sealed syscalls can't be covered this way.
+  Attach events go to the target's stderr when it's a terminal, else to
+  `$TMPDIR/mtdi_<pid>.log` (GUI apps usually have stderr on /dev/null).
 
 ## Dynamic Instrumentation (`-s` probes)
 
@@ -236,6 +241,8 @@ Given this, it's fair to call it one of the fastest DI engines in existence — 
 - Bypassable by code issuing raw assembly syscalls (`svc 0x80`) instead of calling libc.
 - On macOS 26 (Apple Silicon), the kernel PPL-seals a subset of libsystem_kernel's text pages, so 17 of the 25 built-in hooks can't be installed in-place (`close`, `read`, `write`, `socket`, `mmap`, ...). The engine detects this at startup and skips them with a warning — no crash, and Frida hits the same wall. Covering those requires launch-time attachment (see [Attaching](#attaching-to-a-target)).
 - The engine can hook any exported symbol; `-s` probes can register hooks on anything dlsym-visible.
+- Memory footprint: each traced process allocates a 128-slot ring buffer, 1024 events per slot (~1152 B/event) — roughly 144 MB of virtual address space, lazily backed, so physical usage stays near zero until events flow.
+- Probe handlers must not call hooked functions (e.g. opening their own log file): the harness guards against recursion (TLS depth guard drops re-entrant hook dispatches), but a handler that blocks the same mutex it uses elsewhere can still deadlock. Use the pattern from the mtdi-cli skill: guard-flag + non-reentrant file open.
 
 ## MCP Server
 
