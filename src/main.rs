@@ -37,7 +37,7 @@ fn main() -> io::Result<()> {
     } else if let Some(ref custom_path) = parsed_args.custom_dylib {
         std::path::PathBuf::from(custom_path)
     } else {
-        let mut p = env::current_exe()?;
+        let mut p = env::current_exe()?.canonicalize()?;
         p.set_file_name("libmtdi_lib.dylib");
         p
     };

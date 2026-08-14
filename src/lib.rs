@@ -308,6 +308,13 @@ static INITIALIZE: unsafe extern "C" fn() = {
                         *head = read_idx;
                     }
                     if idle {
+                        // On shutdown (atexit), drain whatever is left and
+                        // exit, so a short-lived process never dies with
+                        // events still sitting in the ring.
+                        if SHUTDOWN.load(Ordering::Relaxed) {
+                            READER_DONE.store(true, Ordering::Release);
+                            break;
+                        }
                         // Sleep for real when the queue is empty. A tight poll
                         // (100ns) hammers mach_wait_until at ~1M wakeups/sec and
                         // taxes every core on the machine (measured: ~1.5-4x
@@ -319,6 +326,7 @@ static INITIALIZE: unsafe extern "C" fn() = {
                 }
             }
         });
+        libc::atexit(flush_on_exit);
     }
     init
 };
@@ -479,6 +487,22 @@ pub unsafe extern "C" fn mtdi_log(msg: *const libc::c_char) {
 /// Set while the reader thread is performing its own output write, so
 /// my_write never traces the logger writing to itself.
 static READER_WRITING: AtomicBool = AtomicBool::new(false);
+
+static SHUTDOWN: AtomicBool = AtomicBool::new(false);
+static READER_DONE: AtomicBool = AtomicBool::new(false);
+
+/// Registered via libc::atexit: tells the reader to drain the ring and waits
+/// (bounded) so the final events of a short-lived process get flushed instead
+/// of being lost to the reader's idle sleep.
+extern "C" fn flush_on_exit() {
+    SHUTDOWN.store(true, Ordering::Release);
+    for _ in 0..100 {
+        if READER_DONE.load(Ordering::Acquire) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
 
 fn fmt_close(s: &Slot, j: bool, e: bool, f: &mut core::fmt::Formatter) -> core::fmt::Result {
     let fd = s.args[0] as i32;
