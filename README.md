@@ -1,6 +1,6 @@
 # mtdi
 
-**The Fastest DI Engine on MacOS**
+**The Fastest DI Engine on MacOS (one of the fastest ever)**
 
 `mtdi` is a high-speed tracer + dynamic-instrumentation engine that both intercepts libc/API calls in an unmodified process, and allows for inline hooking. It loads a dylib via either `DYLD_INSERT_LIBRARIES` (at launch) or via task_for_pid() (while running).
 
