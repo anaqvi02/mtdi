@@ -60,14 +60,26 @@ CLI reference: `mtdi -h`.
 | Flag | Meaning |
 |------|---------|
 | `-s, --script <file.rs>` | Compile, verify, and inject a Rust probe (also known as safe mode)|
-| `-u <file.rs>` | Safe mode, but the raw code itself isn't touched. Use if -s breaks. Still unwinds code like usual, but simpler.|
-| `-l, --load <dylib>` | Load a pre-built custom dylib (standard method of running files)|
-| `-p, --pid <PID>` | Attach to a running process |
-| `-t, --trace <calls>` | Comma-separated filter (currently: `open`) |
+| `-l, --load <dylib>` | Load a pre-built custom dylib |
+| `-p, --pid <PID>` | Attach to a running process (see [Attaching](#attaching-to-a-target)) |
+| `-t, --trace <calls>` | Comma-separated filter over the 25 built-in syscalls (e.g. `open,close,read,mmap`) |
 | `-o, --output <file>` | Log destination (default: stderr) |
 | `-j, --json` | NDJSON output |
 | `-e, --ecs` | Elastic Common Schema output |
-| `-u, --legacy-unwind` | Bypass AST verification; permit panics (slower) |
+| `-u, --legacy-unwind <file.rs>` | Bypass AST verification; standard unwinding, panics allowed. Use if `-s` breaks |
+
+## Attaching to a target
+
+Two ways to get the dylib into a process:
+
+- **At launch** — `mtdi ./your_binary` (or `-s probe.rs` / `-l custom.dylib`):
+  the CLI spawns the target with `DYLD_INSERT_LIBRARIES` set, so the dylib
+  loads before `main()` runs. Simplest path, and the only path that can reach
+  the PPL-sealed syscalls on macOS 26 (see [Limitations](#limitations)).
+- **While it's running** — `mtdi -p <PID>`: injects via `task_for_pid()` + a
+  remote thread. No relaunch needed, but the target must be debuggable by you
+  (same user, or root with SIP off), and the PPL-sealed syscalls can't be
+  covered this way.
 
 ## Dynamic Instrumentation (`-s` probes)
 
@@ -110,7 +122,7 @@ When `-u` is not given (using `-s`, not `-l`), the verifier rejects:
 - raw `/` and `%` — division by zero panics even with overflow checks off; use
   `SafeU64::checked_div()` / `checked_rem()`
 
-Everything else is fair game: loops, allocation, recursion, wrapping integer math. panic'ing code will no longer panic, and will be rolled back with standard -s mode. Your code runs inside a `#![forbid(unsafe_code)]` module. The harness compiles with `-C panic=abort`, so if something *does* panic at runtime, the traced process aborts — write code that can't panic.
+Everything else is fair game: loops, allocation, recursion, wrapping integer math. Your code runs inside a `#![forbid(unsafe_code)]` module. The harness compiles with `-C panic=abort`, so if something *does* panic at runtime, the traced process aborts — write code that can't panic.
 
 The probe API (`MtdiSafeContext`):
 
@@ -220,11 +232,10 @@ Given this, it's not hyperbole to say that this is the FASTEST DI Engine ever ma
 
 ## Limitations
 
-- Not a true syscall tracer: only the explicit libc/exported symbols it hooks are visible (unlike `dtruss`, which catches everything at the kernel boundary). you can add whatever syscall you want though, but you have to modify the code.
-- Bypassable by code issuing raw assembly syscalls (`svc 0x80`) instead of
-  calling libc (for syscall tracker)
-- The built-in dylib currently hooks one function (`open`); the engine supports
-  any function, and `-s` probes can hook any exported symbol.
+- Not a true syscall tracer: only the 25 built-in libc calls it hooks are visible (unlike `dtruss`, which catches everything at the kernel boundary).
+- Bypassable by code issuing raw assembly syscalls (`svc 0x80`) instead of calling libc.
+- On macOS 26 (Apple Silicon), the kernel PPL-seals a subset of libsystem_kernel's text pages, so 17 of the 25 built-in hooks can't be installed in-place (`close`, `read`, `write`, `socket`, `mmap`, ...). The engine detects this at startup and skips them with a warning — no crash, and Frida hits the same wall. Covering those requires launch-time attachment (see [Attaching](#attaching-to-a-target)).
+- The engine can hook any exported symbol; `-s` probes can register hooks on anything dlsym-visible.
 
 ## MCP Server
 
