@@ -1,6 +1,6 @@
-// examples/swap.rs
-// "Swap dylib" template for mtrace. Compile this to a dylib and point
-// MTRACE_SWAP_DYLIB at it. The engine dlopens it at startup and, if the
+// probes/swap.rs
+// "Swap dylib" template for mtdi. Compile this to a dylib and point
+// MTDI_SWAP_DYLIB at it. The engine dlopens it at startup and, if the
 // symbol is present, forwards open() calls to `on_open` instead of the
 // real libc open.
 //
@@ -8,8 +8,8 @@
 // defines on_open. (Deleting unused functions is fine — the engine only
 // loads the symbols it knows about.)
 //
-// Build:  rustc --edition=2021 --crate-type cdylib -O examples/swap.rs -o swap.dylib
-// Run:    MTRACE_SWAP_DYLIB=$PWD/swap.dylib mtrace ./your_binary
+// Build:  rustc --edition=2021 --crate-type cdylib -O probes/swap.rs -o swap.dylib
+// Run:    MTDI_SWAP_DYLIB=$PWD/swap.dylib mtdi ./your_binary
 //         (or pass it via the CLI when the swap flag exists)
 
 #![allow(clashing_extern_declarations)]

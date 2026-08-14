@@ -45,11 +45,11 @@ def main():
     native = run_trials("./heavy_bench", 5)
     
     print("\n[2/3] Running Traced (Filtered) benchmarks (5 trials)...")
-    filtered = run_trials("./target/release/mtrace -t asdf ./heavy_bench", 5)
+    filtered = run_trials("./target/release/mtdi -t asdf ./heavy_bench", 5)
     
     print("\n[3/3] Running Traced (Logged) benchmarks (5 trials)...")
     # Write to /dev/null to avoid blowing up the disk with 17 million lines of logs
-    logged = run_trials("./target/release/mtrace -o /dev/null ./heavy_bench", 5)
+    logged = run_trials("./target/release/mtdi -o /dev/null ./heavy_bench", 5)
 
     print("\n\n=== EXHAUSTIVE BENCHMARK RESULTS (0.5m iters, 5 trials avg) ===")
     print(f"{'Syscall Category':<20} | {'Native':<10} | {'Traced (Filtered)':<20} | {'Traced (Logged)':<20}")

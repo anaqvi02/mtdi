@@ -34,6 +34,14 @@ pub fn protect_page(addr: usize) {
     }
 }
 
+/// Overwrites the first 16 bytes at `target_addr` with an absolute jump to
+/// `hook_addr` (LDR X16, #8; BR X16; .dword hook_addr), after unprotecting
+/// and re-protecting the containing page.
+///
+/// # Safety
+/// `target_addr` must point to at least 16 bytes of mapped, executable memory
+/// (typically the prologue of a live function). The caller must ensure no other
+/// thread is executing those bytes concurrently.
 pub unsafe fn overwrite_with_jump(target_addr: usize, hook_addr: usize) -> [u8; 16] {
     let target_ptr = target_addr as *mut u8;
     

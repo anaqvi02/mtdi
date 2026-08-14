@@ -1,5 +1,5 @@
 use std::process::Command;
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::atomic::Ordering;
 
 use crate::cli::args::AppArgs;
@@ -36,16 +36,16 @@ fn check_sip_and_codesign(binary_path: &str) {
     if !is_sip_enabled() { return; }
     
     if binary_path.starts_with("/bin/") || binary_path.starts_with("/usr/bin/") || binary_path.starts_with("/sbin/") || binary_path.starts_with("/usr/sbin/") || binary_path.starts_with("/System/") {
-        eprintln!("[mt] Oh look, SIP is enabled and you're trying to inject into an Apple system binary. Good luck with that.");
+        eprintln!("[mtdi] Oh look, SIP is enabled and you're trying to inject into an Apple system binary. Good luck with that.");
         return;
     }
     
     if has_hardened_runtime(binary_path) && !has_dyld_entitlement(binary_path) {
-        eprintln!("[mt] Oh look, SIP is enabled and this binary enforces the Hardened Runtime. Good luck with that.");
+        eprintln!("[mtdi] Oh look, SIP is enabled and this binary enforces the Hardened Runtime. Good luck with that.");
     }
 }
 
-pub fn spawn_target(args: AppArgs, dylib_path: &PathBuf) -> std::io::Result<()> {
+pub fn spawn_target(args: AppArgs, dylib_path: &Path) -> std::io::Result<()> {
     let cmd_name = args.cmd_name.unwrap();
     check_sip_and_codesign(&cmd_name);
 
@@ -54,16 +54,16 @@ pub fn spawn_target(args: AppArgs, dylib_path: &PathBuf) -> std::io::Result<()> 
     cmd.env("DYLD_INSERT_LIBRARIES", dylib_path);
 
     if let Some(out) = args.output_file {
-        cmd.env("MTRACE_OUTPUT", out);
+        cmd.env("MTDI_OUTPUT", out);
     }
     if let Some(filter) = args.trace_filter {
-        cmd.env("MTRACE_FILTER", filter);
+        cmd.env("MTDI_FILTER", filter);
     }
     if args.json_output {
-        cmd.env("MTRACE_JSON", "1");
+        cmd.env("MTDI_JSON", "1");
     }
     if args.ecs_output {
-        cmd.env("MTRACE_ECS", "1");
+        cmd.env("MTDI_ECS", "1");
     }
 
     let mut child = cmd.spawn()?;
@@ -78,9 +78,9 @@ pub fn spawn_target(args: AppArgs, dylib_path: &PathBuf) -> std::io::Result<()> 
     CHILD_PID.store(0, Ordering::Relaxed);
 
     if status.success() {
-        println!("[mt] Command '{}' finished successfully!", cmd_name);
+        println!("[mtdi] Command '{}' finished successfully!", cmd_name);
     } else {
-        println!("[mt] Command '{}' exited with status: {}", cmd_name, status);
+        println!("[mtdi] Command '{}' exited with status: {}", cmd_name, status);
     }
 
     Ok(())

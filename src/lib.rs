@@ -23,13 +23,16 @@ static mut INIT_MACH_TIME: u64 = 0;
 #[repr(align(128))]
 pub struct Slot {
     pub timestamp: u64,
-    pub formatter: Option<fn(&Slot, bool, bool, &mut core::fmt::Formatter) -> core::fmt::Result>,
+    pub formatter: Option<SlotFormatterFn>,
     pub args: [u64; 6],
     pub str1_len: usize,
     pub str2_len: usize,
     pub str_data: [u8; 1024],
     _pad: [u8; 48],
 }
+
+/// Formats one captured event into the output buffer (plain / NDJSON / ECS).
+pub type SlotFormatterFn = fn(&Slot, bool, bool, &mut core::fmt::Formatter) -> core::fmt::Result;
 
 impl Slot {
     fn get_str1(&self) -> &str {
@@ -81,7 +84,7 @@ static INITIALIZE: unsafe extern "C" fn() = {
     unsafe extern "C" fn init() {
 
         unsafe {
-            mach_timebase_info(&mut TIMEBASE);
+            mach_timebase_info(&raw mut TIMEBASE);
             let mut tv = libc::timeval { tv_sec: 0, tv_usec: 0 };
             libc::gettimeofday(&mut tv, std::ptr::null_mut());
             INIT_TIMEOFDAY_USEC = (tv.tv_sec as u64) * 1_000_000 + (tv.tv_usec as u64);
@@ -95,62 +98,67 @@ static INITIALIZE: unsafe extern "C" fn() = {
             eprintln!("[mtdi] Failed to install hook for open!");
         }
 
-        // Optional "swap dylib" override: if MTRACE_SWAP_DYLIB is set, dlopen it and
+        // Optional "swap dylib" override: if MTDI_SWAP_DYLIB is set, dlopen it and
         // load its on_open symbol. When present, my_open forwards to it instead of the
         // real open, letting the swap dylib sandbox/rewrite open() calls.
-        let env_swap = b"MTRACE_SWAP_DYLIB\0".as_ptr() as *const c_char;
+        let env_swap = c"MTDI_SWAP_DYLIB".as_ptr();
         let swap_ptr = unsafe { libc::getenv(env_swap) };
         if !swap_ptr.is_null() {
             let handle = unsafe { libc::dlopen(swap_ptr, libc::RTLD_LAZY | libc::RTLD_LOCAL) };
             if !handle.is_null() {
-                let sym = unsafe { libc::dlsym(handle, b"on_open\0".as_ptr() as *const c_char) };
-                if !sym.is_null() { USER_ON_OPEN.store(sym as *mut c_void, Ordering::Relaxed); }
+                let sym = unsafe { libc::dlsym(handle, c"on_open".as_ptr()) };
+                if !sym.is_null() {
+                    USER_ON_OPEN.store(sym as *mut c_void, Ordering::Relaxed);
+                }
             }
         }
 
-        let env_out = b"MTRACE_OUTPUT\0".as_ptr() as *const c_char;
+        let env_out = c"MTDI_OUTPUT".as_ptr();
         let out_ptr = unsafe { libc::getenv(env_out) };
         if !out_ptr.is_null() {
-            let fd = unsafe { libc::open(out_ptr, libc::O_CREAT | libc::O_WRONLY | libc::O_APPEND | libc::O_CLOEXEC, 0o666) };
+            let fd = unsafe {
+                libc::open(
+                    out_ptr,
+                    libc::O_CREAT | libc::O_WRONLY | libc::O_APPEND | libc::O_CLOEXEC,
+                    0o666,
+                )
+            };
             if fd >= 0 {
                 LOG_FD.store(fd, Ordering::Relaxed);
             }
         }
-        
-        let env_filter = b"MTRACE_FILTER\0".as_ptr() as *const c_char;
+
+        let env_filter = c"MTDI_FILTER".as_ptr();
         let filter_ptr = unsafe { libc::getenv(env_filter) };
         if !filter_ptr.is_null() {
             FILTER_MASK.store(0, Ordering::Relaxed);
             if let Ok(filter_str) = core::str::from_utf8(unsafe { CStr::from_ptr(filter_ptr).to_bytes() }) {
                 for s in filter_str.split(',') {
-                    match s.trim() {
-                        "open" => { FILTER_MASK.fetch_or(1 << 0, Ordering::Relaxed); },
-                        _ => {}
-                    }
+                    if s.trim() == "open" { FILTER_MASK.fetch_or(1 << 0, Ordering::Relaxed); }
                 }
             }
         }
 
-        let env_json = b"MTRACE_JSON\0".as_ptr() as *const c_char;
+        let env_json = c"MTDI_JSON".as_ptr();
         let json_ptr = unsafe { libc::getenv(env_json) };
         if !json_ptr.is_null() {
             JSON_OUTPUT.store(true, Ordering::Relaxed);
         }
 
-        let env_ecs = b"MTRACE_ECS\0".as_ptr() as *const c_char;
+        let env_ecs = c"MTDI_ECS".as_ptr();
         let ecs_ptr = unsafe { libc::getenv(env_ecs) };
         if !ecs_ptr.is_null() {
             ECS_OUTPUT.store(true, Ordering::Relaxed);
         }
 
         if ECS_OUTPUT.load(Ordering::Relaxed) {
-            let msg = b"{\"@timestamp\":\"2000-01-01T00:00:00Z\",\"event\":{\"action\":\"init\"},\"message\":\"mactrace active\"}\n\0";
+            let msg = b"{\"@timestamp\":\"2000-01-01T00:00:00Z\",\"event\":{\"action\":\"init\"},\"message\":\"mtdi active\"}\n\0";
             unsafe { libc::write(LOG_FD.load(Ordering::Relaxed), msg.as_ptr() as *const c_void, msg.len() - 1); }
         } else if JSON_OUTPUT.load(Ordering::Relaxed) {
-            let msg = b"{\"event\":\"mactrace_active\"}\n\0";
+            let msg = b"{\"event\":\"mtdi_active\"}\n\0";
             unsafe { libc::write(LOG_FD.load(Ordering::Relaxed), msg.as_ptr() as *const c_void, msg.len() - 1); }
         } else {
-            let msg = b"[mt] Active! Monitoring system calls...\n\0";
+            let msg = b"[mtdi] Active! Monitoring system calls...\n\0";
             unsafe { libc::write(LOG_FD.load(Ordering::Relaxed), msg.as_ptr() as *const c_void, msg.len() - 1); }
         }
         unsafe {
@@ -176,9 +184,9 @@ static INITIALIZE: unsafe extern "C" fn() = {
                     let active = ACTIVE_QUEUES.load(Ordering::Acquire);
                     let mut idle = true;
                     
-                    for i in 0..active {
+                    for (i, head) in read_heads.iter_mut().enumerate().take(active) {
                         let q = &mut *THREAD_QUEUES.add(i);
-                        let mut read_idx = read_heads[i];
+                        let mut read_idx = *head;
                         
                         for _ in 0..64 { // process up to 64 per queue to ensure fairness
                             let slot_idx = read_idx & MASK;
@@ -208,7 +216,7 @@ static INITIALIZE: unsafe extern "C" fn() = {
                             let mut tm: libc::tm = core::mem::zeroed();
                             let tv_sec = sec as libc::time_t;
                             libc::gmtime_r(&tv_sec, &mut tm);
-                            let _ = write!(slice, "{{\"@timestamp\":\"{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z\",{}}}\n",
+                            let _ = writeln!(slice, "{{\"@timestamp\":\"{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z\",{}}}",
                                 tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
                                 tm.tm_hour, tm.tm_min, tm.tm_sec, usec / 1000,
                                 formatter
@@ -217,12 +225,12 @@ static INITIALIZE: unsafe extern "C" fn() = {
                             let h = (sec / 3600) % 24;
                             let m = (sec / 60) % 60;
                             let s = sec % 60;
-                            let _ = write!(slice, "{{\"timestamp\":\"{:02}:{:02}:{:02}.{:06}\",{}}}\n", h, m, s, usec, formatter);
+                            let _ = writeln!(slice, "{{\"timestamp\":\"{:02}:{:02}:{:02}.{:06}\",{}}}", h, m, s, usec, formatter);
                         } else {
                             let h = (sec / 3600) % 24;
                             let m = (sec / 60) % 60;
                             let s = sec % 60;
-                            let _ = write!(slice, "[{:02}:{:02}:{:02}.{:06}] [mt] Caught {}\n", h, m, s, usec, formatter);
+                            let _ = writeln!(slice, "[{:02}:{:02}:{:02}.{:06}] [mtdi] Caught {}", h, m, s, usec, formatter);
                         }
                         
                         let len = 4096 - slice.len();
@@ -231,7 +239,7 @@ static INITIALIZE: unsafe extern "C" fn() = {
                         q.ready[slot_idx].store(0, Ordering::Release);
                         read_idx += 1;
                         }
-                        read_heads[i] = read_idx;
+                        *head = read_idx;
                     }
                     if idle {
                         std::thread::sleep(std::time::Duration::from_nanos(100));
@@ -268,7 +276,7 @@ impl<'a> core::fmt::Display for JsonEscape<'a> {
 
 #[inline(always)]
 fn push_binary_event(
-    formatter: fn(&Slot, bool, bool, &mut core::fmt::Formatter) -> core::fmt::Result,
+    formatter: SlotFormatterFn,
     args: [u64; 6],
     c_str1: *const c_char,
     c_str2: *const c_char,
@@ -329,13 +337,19 @@ fn fmt_open(s: &Slot, j: bool, e: bool, f: &mut core::fmt::Formatter) -> core::f
     let oflag = s.args[0]; let mode = s.args[1];
     // The reader thread opens the outer JSON object ({"timestamp":...), runs this
     // formatter, then closes it and appends the newline.
-    if e { write!(f, "\"event\":{{\"category\":[\"process\"],\"action\":\"open\"}},\"message\":\"[mt] Caught open({}, {}, {})\",\"mactrace\":{{\"path\":\"{}\",\"oflag\":{},\"mode\":{}}}", path, oflag, mode, path, oflag, mode) }
+    if e { write!(f, "\"event\":{{\"category\":[\"process\"],\"action\":\"open\"}},\"message\":\"[mtdi] Caught open({}, {}, {})\",\"mtdi\":{{\"path\":\"{}\",\"oflag\":{},\"mode\":{}}}", path, oflag, mode, path, oflag, mode) }
     else if j { write!(f, "\"syscall\":\"open\",\"args\":{{\"path\":\"{}\",\"oflag\":{},\"mode\":{}}}", path, oflag, mode) }
     else { write!(f, "open(\"{}\", {}, {})", s.get_str1(), oflag, mode) }
 }
 
 static TRAMP_OPEN: AtomicUsize = AtomicUsize::new(0);
 
+/// FastPath handler for `open(2)`.
+///
+/// # Safety
+/// `path` must be a valid NUL-terminated string for the duration of the call.
+/// This is installed as a detour target by the engine and may be invoked with
+/// arbitrary register state; it preserves all registers by construction.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn my_open(path: *const c_char, oflag: c_int, mode: c_int) -> c_int { unsafe {
     let p = USER_ON_OPEN.load(Ordering::Relaxed);
@@ -357,13 +371,17 @@ pub unsafe extern "C" fn my_open(path: *const c_char, oflag: c_int, mode: c_int)
 
 fn fmt_raw(s: &Slot, j: bool, e: bool, f: &mut core::fmt::Formatter) -> core::fmt::Result {
     let msg = JsonEscape(s.get_str1());
-    if e { write!(f, "\"event\":{{\"category\":[\"process\"],\"action\":\"log\"}},\"message\":\"[mt] {}\",\"mactrace\":{{\"log\":\"{}\"}}", msg, msg) }
+    if e { write!(f, "\"event\":{{\"category\":[\"process\"],\"action\":\"log\"}},\"message\":\"[mtdi] {}\",\"mtdi\":{{\"log\":\"{}\"}}", msg, msg) }
     else if j { write!(f, "\"event\":\"log\",\"message\":\"{}\"", msg) }
     else { write!(f, "{}", s.get_str1()) }
 }
 
+/// Emits a raw log line through the event pipeline.
+///
+/// # Safety
+/// `msg` must be a valid NUL-terminated string for the duration of the call.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn mtrace_log(msg: *const libc::c_char) {
+pub unsafe extern "C" fn mtdi_log(msg: *const libc::c_char) {
     if msg.is_null() { return; }
     unsafe {
         if !THREAD_QUEUES.is_null() {

@@ -2,9 +2,32 @@ import subprocess
 import tempfile
 import os
 import time
+import shutil
 from fastmcp import FastMCP
 
 mcp = FastMCP("MTDI")
+
+
+def _mtdi_binary() -> str:
+    """Locate the mtdi CLI: $MTDI_BIN, then <repo>/target/release/mtdi, then PATH."""
+    env = os.environ.get("MTDI_BIN")
+    if env and os.path.exists(env):
+        return env
+    repo_relative = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "target",
+        "release",
+        "mtdi",
+    )
+    if os.path.exists(repo_relative):
+        return repo_relative
+    found = shutil.which("mtdi")
+    if found:
+        return found
+    raise FileNotFoundError(
+        "mtdi binary not found. Build it with `cargo build --release` in the repo "
+        "root, or point $MTDI_BIN at the built binary."
+    )
 
 @mcp.tool()
 def list_processes(query: str = "") -> str:
@@ -54,7 +77,7 @@ def trace_process(target: str, script_code: str, duration_seconds: int = 5, lega
         script_path = f.name
         
     try:
-        cmd = ["/Users/alinaqvi/Desktop/mtdi/target/release/mtrace"]
+        cmd = [_mtdi_binary()]
         if legacy_unwind:
             cmd.append("-u")
         cmd.extend(["-s", script_path, str(target)])
@@ -217,8 +240,10 @@ When `legacy_unwind` is False, the engine enforces zero-panic code by walking yo
 1. `.unwrap()` / `.expect()` (method calls AND bare function calls). Use `match`, `if let`, or `.unwrap_or()`.
 2. Array indexing `foo[i]`. Use `.get_safe(i)` (harness trait, clamps out-of-bounds) or `.get(i)`.
 3. The macros `panic!`, `assert!`, `assert_eq!`, `assert_ne!`, `todo!`, `unimplemented!`, `unreachable!`.
+4. The functions `panic_any`, `abort`, `exit`, `unreachable_unchecked` (e.g. `std::process::abort()`).
+5. Raw integer division `/` and modulo `%` — dividing by zero panics even with `overflow-checks=off`. Use `SafeU64::checked_div()` / `SafeU64::checked_rem()`.
 
-What is allowed (the verifier does NOT check these): `for`/`while`/`loop`, Vec/String/HashMap allocation, recursion, and integer arithmetic. The harness compiles your code with `-C overflow-checks=off` (wrapping arithmetic, like C on arm64) and `-C panic=abort` — if anything panics anyway, the whole traced process aborts. Don't write code that panics.
+What is allowed (the verifier does NOT check these): `for`/`while`/`loop`, Vec/String/HashMap allocation, recursion, and integer arithmetic (`+`, `-`, `*`, `<<`, `>>` — wrapping under `overflow-checks=off`, like C on arm64). The harness compiles your code with `-C overflow-checks=off` and `-C panic=abort` — if anything panics anyway, the whole traced process aborts. Don't write code that panics.
 
 Your probe code runs inside a module with `#![forbid(unsafe_code)]` — no `unsafe` blocks.
 

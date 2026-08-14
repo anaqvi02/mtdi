@@ -1,16 +1,15 @@
 [package]
-name = "mtrace"
+name = "mtdi"
 version = "0.1.0"
 edition = "2021"
+description = "Zero-privilege user-space dynamic instrumentation for macOS (AArch64 inline hooks, dyld injection, JIT-compiled Rust probes)"
+license = "Apache-2.0"
 
 [dependencies]
 libc = "0.2"
 mach2 = "0.4"
-lazy_static = "1.4.0"
 syn = { version = "3.0.3", features = ["full", "visit"] }
-quote = "1.0.47"
-proc-macro2 = "1.0.107"
 
 [lib]
-name = "mactrace_lib"
+name = "mtdi_lib"
 crate-type = ["cdylib", "rlib"]

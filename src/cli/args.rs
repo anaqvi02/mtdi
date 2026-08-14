@@ -104,10 +104,10 @@ pub fn parse_args() -> AppArgs {
 
 pub fn print_help() {
     println!("mtdi - High-speed macOS user-space dynamic instrumentation");
-    println!("");
+    println!();
     println!("Usage: mtdi [OPTIONS] <command> [args...]");
     println!("       mtdi -p <PID>");
-    println!("");
+    println!();
     println!("Options:");
     println!("  -s, --script <file.rs> Compile, sandbox-verify, and inject a safe Rust probe");
     println!("  -l, --load <dylib>     Load a custom pre-compiled dylib directly (BYOB)");
@@ -118,7 +118,7 @@ pub fn print_help() {
     println!("  -e, --ecs              Export logs in Elastic Common Schema (ECS) JSON format");
     println!("  -u, --legacy-unwind              Enable traditional catch_unwind safety net (permits panics/unwraps, slightly slower)");
     println!("  -h, --help             Print this help message and exit");
-    println!("");
+    println!();
     println!("Examples:");
     println!("  mtdi -s my_probe.rs curl http://example.com");
     println!("  mtdi -s my_probe.rs -p 1234");

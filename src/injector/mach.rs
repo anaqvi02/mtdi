@@ -21,7 +21,7 @@ extern "C" {
 const ARM_THREAD_STATE64: c_int = 6;
 const ARM_THREAD_STATE64_COUNT: u32 = 68; // 272 bytes / 4
 
-pub fn inject_into_pid(pid: i32, dylib_path: &std::path::PathBuf) {
+pub fn inject_into_pid(pid: i32, dylib_path: &std::path::Path) {
     println!("[mtdi] Attaching to live PID: {}", pid);
 
     let mut target_task: mach_port_t = 0;
@@ -93,7 +93,7 @@ pub fn inject_into_pid(pid: i32, dylib_path: &std::path::PathBuf) {
     state.__lr = pthread_exit_ptr;
     
     // SP = top of the 1MB allocation (16-byte aligned)
-    state.__sp = (remote_address + allocation_size as u64 - 16) & !0xF;
+    state.__sp = (remote_address + allocation_size - 16) & !0xF;
 
     // 4. Create and start the thread
     let mut child_thread: thread_act_t = 0;

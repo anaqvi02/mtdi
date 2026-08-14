@@ -4,6 +4,7 @@ use std::process::Command;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use syn::visit::Visit;
+use syn::BinOp;
 
 struct SafetyVerifier {
     pub errors: Vec<String>,
@@ -37,12 +38,24 @@ impl<'ast> Visit<'ast> for SafetyVerifier {
         if let syn::Expr::Path(expr_path) = &*node.func {
             if let Some(segment) = expr_path.path.segments.last() {
                 let func_name = segment.ident.to_string();
-                if func_name == "unwrap" || func_name == "expect" {
-                    self.errors.push(format!("AST Verifier: Function call to '{}' is forbidden.", func_name));
+                if ["unwrap", "expect", "panic_any", "abort", "exit", "unreachable_unchecked"].contains(&func_name.as_str()) {
+                    self.errors.push(format!("AST Verifier: Function call to '{}' is forbidden because it can panic or kill the process.", func_name));
                 }
             }
         }
         syn::visit::visit_expr_call(self, node);
+    }
+
+    fn visit_expr_binary(&mut self, node: &'ast syn::ExprBinary) {
+        // rustc emits the divide-by-zero check even with -C overflow-checks=off,
+        // so raw `/` and `%` can panic at runtime. The Zero-Panic API provides
+        // SafeU64::checked_div/checked_rem for division instead.
+        if let BinOp::Div(_) | BinOp::Rem(_) = &node.op {
+            self.errors.push(
+                "AST Verifier: Raw division '/' and modulo '%' are forbidden because dividing by zero panics. Use SafeU64's checked_div()/checked_rem() instead.".to_string(),
+            );
+        }
+        syn::visit::visit_expr_binary(self, node);
     }
 }
 pub fn compile_script(script_path: &Path, legacy_unwind: bool) -> Result<PathBuf, String> {
@@ -569,11 +582,14 @@ mod user_sandbox {{
         fn mul(self, rhs: SafeU64) -> SafeU64 {{ SafeU64(self.0.wrapping_mul(rhs.0)) }}
     }}
 
-    impl std::ops::Div for SafeU64 {{
-        type Output = SafeU64;
+    impl SafeU64 {{
         #[inline(always)]
-        fn div(self, rhs: SafeU64) -> SafeU64 {{
+        pub fn checked_div(self, rhs: SafeU64) -> SafeU64 {{
             SafeU64(self.0.checked_div(rhs.0).unwrap_or(0))
+        }}
+        #[inline(always)]
+        pub fn checked_rem(self, rhs: SafeU64) -> SafeU64 {{
+            SafeU64(self.0.checked_rem(rhs.0).unwrap_or(0))
         }}
     }}
 
@@ -641,4 +657,107 @@ extern "C" fn mtdis_init() {{
     }}
 }}
 "###)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SafetyVerifier;
+    use syn::visit::Visit;
+
+    /// Run the AST verifier over `code` and return the violation messages.
+    fn verify(code: &str) -> Vec<String> {
+        let ast = syn::parse_file(code).expect("test probe must parse");
+        let mut verifier = SafetyVerifier { errors: Vec::new() };
+        verifier.visit_file(&ast);
+        verifier.errors
+    }
+
+    #[test]
+    fn accepts_clean_probe() {
+        let errs = verify(
+            r#"
+            pub fn on_open(ctx: &mut MtdiSafeContext) {
+                if let Some(path) = ctx.read_arg_str(0, 256) {
+                    println!("open: {}", path);
+                }
+            }
+            pub fn register(reg: &mut MtdiRegistry) {
+                reg.hook_symbol("open", on_open);
+            }
+            "#,
+        );
+        assert!(errs.is_empty(), "clean probe rejected: {errs:?}");
+    }
+
+    #[test]
+    fn rejects_unwrap_and_expect() {
+        let errs = verify(
+            r#"
+            pub fn on_open(ctx: &mut MtdiSafeContext) {
+                let x = ctx.read_arg_str(0, 8).unwrap();
+                let y = Some(1u64).expect("boom");
+                let _ = (x, y);
+            }
+            "#,
+        );
+        assert_eq!(errs.len(), 2, "expected unwrap+expect violations: {errs:?}");
+        assert!(errs.iter().all(|e| e.contains("forbidden")));
+    }
+
+    #[test]
+    fn rejects_raw_indexing() {
+        let errs = verify(
+            r#"
+            pub fn on_open(ctx: &mut MtdiSafeContext) {
+                let v = [1u64, 2, 3];
+                let _ = v[1];
+            }
+            "#,
+        );
+        assert_eq!(errs.len(), 1, "expected indexing violation: {errs:?}");
+        assert!(errs[0].contains("get_safe"));
+    }
+
+    #[test]
+    fn rejects_panicking_macros() {
+        let errs = verify(
+            r#"
+            pub fn on_open(ctx: &mut MtdiSafeContext) {
+                assert!(ctx.arg(0) != 0);
+                unreachable!();
+            }
+            "#,
+        );
+        assert_eq!(errs.len(), 2, "expected assert!+unreachable! violations: {errs:?}");
+    }
+
+    #[test]
+    fn rejects_raw_division_and_modulo() {
+        let errs = verify(
+            r#"
+            pub fn on_open(ctx: &mut MtdiSafeContext) {
+                let a = ctx.arg(0);
+                let _ = a / 2;
+                let _ = a % 2;
+            }
+            "#,
+        );
+        assert_eq!(errs.len(), 2, "expected div+rem violations: {errs:?}");
+        assert!(
+            errs.iter()
+                .all(|e| e.contains("checked_div") || e.contains("checked_rem"))
+        );
+    }
+
+    #[test]
+    fn rejects_process_killing_calls() {
+        let errs = verify(
+            r#"
+            pub fn on_open(ctx: &mut MtdiSafeContext) {
+                std::process::abort();
+            }
+            "#,
+        );
+        assert_eq!(errs.len(), 1, "expected abort() violation: {errs:?}");
+    }
 }

@@ -38,14 +38,14 @@ fn main() -> io::Result<()> {
         std::path::PathBuf::from(custom_path)
     } else {
         let mut p = env::current_exe()?;
-        p.set_file_name("libmactrace_lib.dylib");
+        p.set_file_name("libmtdi_lib.dylib");
         p
     };
 
     if !dylib_path.exists() {
-        eprintln!("[mt] Error: Dylib not found at {}", dylib_path.display());
+        eprintln!("[mtdi] Error: Dylib not found at {}", dylib_path.display());
         if parsed_args.custom_dylib.is_none() {
-            eprintln!("[mt] Make sure you built the project with `cargo build`");
+            eprintln!("[mtdi] Make sure you built the project with `cargo build`");
         }
         std::process::exit(1);
     }

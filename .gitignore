@@ -1,22 +1,37 @@
+# Rust build artifacts
 /target
-*.log
-.idea
+target/
+
+# Local tooling / editor config — machine-specific, never publish
+.claude/
+.agents/
+.idea/
+.vscode/
 .DS_Store
-examples/victim
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Compiled outputs from examples/bench scripts
 *.dylib
 *.dSYM
+*.log
 *.txt
+
+# Bench/victim binaries produced by the example harnesses
 bench
 bench.c
 heavy_bench
+victim
+victim2
+hello
+hello.go
+
+# Historical scratch files
 patch_lib.py
 scratch
 scratch.rs
 test_kill.sh
 test_kill_10s.sh
-victim2
-hello
-hello.go
-
-# python
-__pycache__/

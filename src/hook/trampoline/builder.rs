@@ -2,6 +2,13 @@ use super::allocator::allocate_trampoline;
 use super::relocator::relocate_instruction;
 use crate::hook::{unprotect_page, protect_page};
 
+/// Builds a trampoline that re-executes the stolen prologue instructions and
+/// branches back into the original function after the detour.
+///
+/// # Safety
+/// `stolen_bytes` must be the exact 16 bytes previously read from
+/// `original_addr` before the detour was installed, and `original_addr` must
+/// still be mapped executable.
 pub unsafe fn build_trampoline(original_addr: usize, stolen_bytes: &[u8; 16]) -> usize {
     let mut relocated_instructions = Vec::with_capacity(64);
 

@@ -1,4 +1,4 @@
-// examples/probe_open.rs
+// probes/probe_open.rs
 // A 100% Safe Rust probe executed inside the mtdis sandbox
 
 pub fn on_open(ctx: &mut MtdiSafeContext) {
