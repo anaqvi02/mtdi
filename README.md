@@ -287,4 +287,4 @@ cargo run --release --bin bench_cold  # worst-case overhead battery
 
 ## Disclaimer
 
-`mtdi` is an instrumentation tool. Intercepting or modifying another application's behavior may violate its license, your organization's policy, or the law. Use it only on software you own or are authorized to analyze. do good, not evil.
+`mtdi` is an instrumentation tool. Intercepting or modifying another application's behavior may violate its license, your organization's policy, or the law. Use it only on software you own or are authorized to analyze.
