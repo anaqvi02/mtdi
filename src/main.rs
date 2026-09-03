@@ -53,8 +53,20 @@ fn main() -> io::Result<()> {
     }
 
     if let Some(pid) = parsed_args.target_pid {
+        if parsed_args.output_file.is_some()
+            || parsed_args.trace_filter.is_some()
+            || parsed_args.json_output
+            || parsed_args.ecs_output
+        {
+            eprintln!("[mtdi] Error: -o/-t/-j/-e only apply to launch mode (mtdi <command>); a running target's environment can't be set by attach.");
+            std::process::exit(1);
+        }
         injector::mach::inject_into_pid(pid, &dylib_path);
     } else if parsed_args.check_only {
+        if parsed_args.script_file.is_none() {
+            eprintln!("[mtdis] Error: --check-only requires -s <probe.rs>");
+            std::process::exit(1);
+        }
         // --check-only: compile + verify, never run (mcp check_probe_syntax)
         println!("[mtdis] Check-only: probe compiles and passes verification.");
     } else {

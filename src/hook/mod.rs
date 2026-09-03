@@ -4,7 +4,7 @@ use mach2::vm::mach_vm_protect;
 use mach2::vm_prot::{VM_PROT_COPY, VM_PROT_EXECUTE, VM_PROT_READ, VM_PROT_WRITE};
 
 extern "C" {
-    fn sys_icache_invalidate(start: *mut libc::c_void, len: usize);
+    pub(crate) fn sys_icache_invalidate(start: *mut libc::c_void, len: usize);
 }
 
 /// one fork per unique page, not per symbol (stubs share pages;
@@ -42,7 +42,7 @@ fn probe_page(page_start: usize, addr: usize) -> bool {
 
 /// probes write-ability in a forked child so a fault (e.g. PPL) kills
 /// only the child; verdicts cached per page
-fn page_accepts_writes(addr: usize) -> bool {
+pub(crate) fn page_accepts_writes(addr: usize) -> bool {
     let page_start = addr & !(16384 - 1);
     for e in PROBED_PAGES.iter() {
         let e = e.load(core::sync::atomic::Ordering::Relaxed);
@@ -95,11 +95,8 @@ pub fn protect_page(addr: usize) -> kern_return_t {
 /// # Safety
 /// target must be 16+ bytes of mapped executable memory; no other thread
 /// may be executing it concurrently
-pub unsafe fn overwrite_with_jump(target_addr: usize, hook_addr: usize) -> Result<[u8; 16], String> {
+pub unsafe fn overwrite_with_jump(target_addr: usize, hook_addr: usize) -> Result<(), String> {
     let target_ptr = target_addr as *mut u8;
-
-    let mut original_bytes = [0u8; 16];
-    std::ptr::copy_nonoverlapping(target_ptr, original_bytes.as_mut_ptr(), 16);
 
     let mut payload = [0u8; 16];
     payload[0..4].copy_from_slice(&0x58000050u32.to_le_bytes()); // ldr x16, #8
@@ -127,7 +124,7 @@ pub unsafe fn overwrite_with_jump(target_addr: usize, hook_addr: usize) -> Resul
 
     protect_page(target_addr);
 
-    Ok(original_bytes)
+    Ok(())
 }
 
 pub mod trampoline;

@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Measure Frida's per-call interceptor overhead vs mtdi on the same target."""
-import subprocess, os, time, sys
+"""measure frida's per-call interceptor overhead vs mtdi on the same target."""
+import subprocess, os, time
 
 DIR = os.path.dirname(os.path.abspath(__file__))
-BENCH_SRC = os.path.join(DIR, "frida_bench.c")
-BENCH_BIN = os.path.join(DIR, "frida_bench")
+BENCH_SRC = os.path.join(DIR, "frida_bench2.c")
+BENCH_BIN = os.path.join(DIR, "frida_bench2")
 AGENT_JS  = os.path.join(DIR, "frida_bench_agent.js")
+RESULT_FILE = "/tmp/frida_bench_result.txt"
 
 def compile():
     subprocess.run(["gcc", "-O2", "-o", BENCH_BIN, BENCH_SRC], check=True)
@@ -16,93 +17,27 @@ def run_native():
     ns = float(line.split()[0])
     return ns, line
 
-def run_with_frida():
-    """Spawn the binary under Frida with the interceptor hook, let it run to completion,
-    capture its stdout (the self-reported timing)."""
+def run_frida_bench():
+    """spawn the bench directly under frida, hook target_func, read the result file.
+    stdout of a frida-spawned child is not capturable, so the bench writes its
+    timing to /tmp/frida_bench_result.txt."""
     import frida
+
+    try:
+        os.unlink(RESULT_FILE)
+    except FileNotFoundError:
+        pass
 
     pid = frida.spawn([BENCH_BIN])
     session = frida.attach(pid)
 
     with open(AGENT_JS) as f:
         agent = f.read()
-
     script = session.create_script(agent)
     script.load()
     frida.resume(pid)
 
-    # throws when the process is gone
-    for _ in range(300):  # 30s max
-        try:
-            frida.get_process(pid)
-            time.sleep(0.1)
-        except:
-            break
-
-    session.detach()
-
-    # frida.spawn captures the child, so we can't get its stdout
-
-    return None
-
-def run_frida_trace():
-    """Use frida-trace CLI to hook target_func and let the binary self-time."""
-    import subprocess, signal
-
-    proc = subprocess.Popen(
-        [BENCH_BIN],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True
-    )
-
-    time.sleep(0.05)
-
-    trace = subprocess.Popen(
-        ["frida-trace", "-p", str(proc.pid), "-i", "target_func", "-q"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True
-    )
-
-    stdout, stderr = proc.communicate(timeout=30)
-    trace.terminate()
-    trace.wait()
-
-    ns = float(stdout.strip().split()[0])
-    return ns, stdout.strip()
-
-def run_frida_python_api():
-    """Use Frida Python API: spawn, hook, resume, wait for exit, get timing via pipe."""
-    import frida
-
-    # redirect output via a tiny wrapper
-    wrapper_src = os.path.join(DIR, "frida_bench_wrapper.c")
-    with open(wrapper_src, "w") as f:
-        f.write(f"""
-#include <stdio.h>
-#include <stdlib.h>
-#include <unistd.h>
-int main(int argc, char **argv) {{
-    // redirect stdout to a temp file
-    char *tmp = "/tmp/frida_bench_out.txt";
-    freopen(tmp, "w", stdout);
-    return system("{BENCH_BIN}");
-}}
-""")
-    wrapper_bin = os.path.join(DIR, "frida_bench_wrapper")
-    subprocess.run(["gcc", "-O2", "-o", wrapper_bin, wrapper_src], check=True)
-
-    pid = frida.spawn([wrapper_bin])
-    session = frida.attach(pid)
-
-    with open(AGENT_JS) as f:
-        agent = f.read()
-
-    script = session.create_script(agent)
-    script.load()
-    frida.resume(pid)
-
+    # wait for the bench to finish and exit
     for _ in range(300):
         try:
             frida.get_process(pid)
@@ -111,15 +46,12 @@ int main(int argc, char **argv) {{
             break
 
     session.detach()
-
-    time.sleep(0.2)
+    time.sleep(0.3)
     try:
-        with open("/tmp/frida_bench_out.txt") as f:
-            output = f.read().strip()
-        ns = float(output.split()[0])
-        return ns, output
-    except:
-        return None, "could not read output"
+        with open(RESULT_FILE) as f:
+            return float(f.read().strip())
+    except Exception:
+        return None
 
 if __name__ == "__main__":
     compile()
@@ -129,6 +61,7 @@ if __name__ == "__main__":
     print("  1M iterations of a 5-nop + ret function")
     print("=" * 60)
 
+    # native baseline
     print("\n--- Native baseline (10 runs) ---")
     natives = []
     for i in range(10):
@@ -139,15 +72,16 @@ if __name__ == "__main__":
     native_max = max(natives)
     print(f"  avg: {native_avg:.2f}  min: {native_min:.2f}  max: {native_max:.2f} ns/call")
 
+    # frida, JS-callback Interceptor.attach (the default usage)
     print("\n--- Frida Interceptor (5 runs) ---")
     frida_vals = []
     for i in range(5):
-        ns, line = run_frida_python_api()
+        ns = run_frida_bench()
         if ns is not None:
             frida_vals.append(ns)
-            print(f"  run {i+1}: {line}")
+            print(f"  run {i+1}: {ns:.2f} ns/call")
         else:
-            print(f"  run {i+1}: FAILED ({line})")
+            print(f"  run {i+1}: FAILED")
 
     if frida_vals:
         frida_avg = sum(frida_vals) / len(frida_vals)
@@ -162,7 +96,7 @@ if __name__ == "__main__":
     print("  FastPath:   ~1.6 ns/call overhead")
     print("  FullContext: ~15 ns/call overhead")
 
-    if frida_vals:
+    if frida_vals and overhead > 0:
         print(f"\n{'='*60}")
         print(f"  mtdi FastPath ({1.6:.1f} ns) vs Frida ({overhead:.1f} ns)")
         print(f"  mtdi is {overhead/1.6:.0f}x FASTER than Frida on the hook path")

@@ -91,7 +91,7 @@ pub fn relocate_instruction(instruction: u32, original_pc: usize, out_buffer: &m
     }
     
     // 4. cbz/cbnz
-    if ((instruction >> 24) & 0b01111111) == 0b00110100 {
+    if ((instruction >> 25) & 0b00111111) == 0b011010 {
         let mut imm = (instruction >> 5) & 0x7FFFF;
         if (imm & 0x40000) != 0 { imm |= 0xFFF80000; }
         let imm = imm as i32 as i64;
@@ -111,7 +111,7 @@ pub fn relocate_instruction(instruction: u32, original_pc: usize, out_buffer: &m
     }
     
     // 5. tbz/tbnz
-    if ((instruction >> 24) & 0b01111111) == 0b00110110 {
+    if ((instruction >> 25) & 0b00111111) == 0b011011 {
         let mut imm = (instruction >> 5) & 0x3FFF;
         if (imm & 0x2000) != 0 { imm |= 0xFFFFC000; }
         let imm = imm as i32 as i64;

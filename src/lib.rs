@@ -78,6 +78,7 @@ static ACTIVE_QUEUES: AtomicUsize = AtomicUsize::new(0);
 static THREAD_KEY: AtomicUsize = AtomicUsize::new(0);
 
 static LOG_FD: AtomicI32 = AtomicI32::new(2);
+static INIT_PID: AtomicI32 = AtomicI32::new(0);
 static FILTER_MASK: AtomicU32 = AtomicU32::new(0xFFFFFFFF);
 static JSON_OUTPUT: AtomicBool = AtomicBool::new(false);
 static ECS_OUTPUT: AtomicBool = AtomicBool::new(false);
@@ -95,6 +96,7 @@ static INITIALIZE: unsafe extern "C" fn() = {
             libc::gettimeofday(&mut tv, std::ptr::null_mut());
             INIT_TIMEOFDAY_USEC = (tv.tv_sec as u64) * 1_000_000 + (tv.tv_usec as u64);
             INIT_MACH_TIME = mach_absolute_time();
+            INIT_PID.store(libc::getpid(), Ordering::Relaxed);
         }
 
         // install the 25 libc hooks, fastpath style
@@ -182,7 +184,7 @@ static INITIALIZE: unsafe extern "C" fn() = {
         // attach mode can't cover ppl-sealed syscalls; say so up front
         if unsafe { libc::getenv(c"MTDI_OWN_SIGTERM".as_ptr()) }.is_null() {
             unsafe {
-                mtdi_log(c"[mtdi] Note: PID attach hooks only the PPL-writable syscalls (~8 of 25 on macOS 26). Full 25/25 syscall tracing requires launch-time tracing with DYLD_INTERPOSE (`mtdi <cmd>`).\n".as_ptr());
+                mtdi_log(c"[mtdi] Note: PID attach hooks only the PPL-writable subset of syscalls. Full 25/25 syscall tracing requires launch-time tracing with DYLD_INTERPOSE (`mtdi <cmd>`).\n".as_ptr());
                 mtdi_log(c"[mtdi] Things will break if you try to trace syscalls anyways with PID attaching.\n".as_ptr());
             }
         }
@@ -254,7 +256,6 @@ static INITIALIZE: unsafe extern "C" fn() = {
             
             let size = MAX_THREADS * core::mem::size_of::<ThreadQueue>();
             let ptr = libc::mmap(core::ptr::null_mut(), size, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_PRIVATE | libc::MAP_ANON, -1, 0);
-            core::ptr::write_bytes(ptr, 0, size);
             THREAD_QUEUES = ptr as *mut ThreadQueue;
         }
 
@@ -293,7 +294,7 @@ static INITIALIZE: unsafe extern "C" fn() = {
                         let sec = current_usec / 1_000_000;
                         let usec = current_usec % 1_000_000;
                         
-                        let mut buf = [0u8; 4096];
+                        let mut buf = [0u8; 8192];
                         let mut slice = &mut buf[..];
                         
                         let formatter = SlotFormatter { slot, json: is_json, ecs: is_ecs };
@@ -394,8 +395,17 @@ fn push_binary_event(
             let mut q_ptr = libc::pthread_getspecific(key) as *mut ThreadQueue;
             
             if q_ptr.is_null() {
-                let q_idx = ACTIVE_QUEUES.fetch_add(1, Ordering::Relaxed);
-                if q_idx >= MAX_THREADS { return; } // Too many threads
+                // bounded, fork-safe allocation: counter never exceeds
+                // MAX_THREADS, so the reader's take(active) stays in-bounds
+                let q_idx;
+                loop {
+                    let cur = ACTIVE_QUEUES.load(Ordering::Relaxed);
+                    if cur >= MAX_THREADS { return; }
+                    match ACTIVE_QUEUES.compare_exchange_weak(cur, cur + 1, Ordering::Relaxed, Ordering::Relaxed) {
+                        Ok(_) => { q_idx = cur; break; }
+                        Err(_) => continue,
+                    }
+                }
                 q_ptr = THREAD_QUEUES.add(q_idx);
                 libc::pthread_setspecific(key, q_ptr as *mut libc::c_void);
             }
@@ -494,6 +504,10 @@ pub unsafe extern "C" fn mtdi_log(msg: *const libc::c_char) {
             let copy_len = core::cmp::min(len, 4096);
             ptr::copy_nonoverlapping(msg as *const u8, buf.as_mut_ptr(), copy_len);
             libc::write(LOG_FD.load(Ordering::Relaxed), buf.as_ptr() as *const libc::c_void, copy_len);
+            // ring path ends lines with \n; keep the direct path consistent
+            if copy_len == 0 || buf[copy_len - 1] != b'\n' {
+                libc::write(LOG_FD.load(Ordering::Relaxed), b"\n".as_ptr() as *const libc::c_void, 1);
+            }
         }
     }
 }
@@ -510,6 +524,11 @@ static READER_DONE: AtomicBool = AtomicBool::new(false);
 /// atexit: drain the ring (bounded) so short-lived processes
 /// flush their tail instead of losing it to idle sleep
 extern "C" fn flush_on_exit() {
+    // forked child: no reader thread exists here, and the ring is COW;
+    // waiting would stall every child exit for the full 100ms budget
+    if unsafe { libc::getpid() } != INIT_PID.load(Ordering::Relaxed) {
+        return;
+    }
     SHUTDOWN.store(true, Ordering::Release);
     for _ in 0..100 {
         if READER_DONE.load(Ordering::Acquire) {

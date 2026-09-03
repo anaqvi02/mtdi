@@ -39,6 +39,21 @@ fn has_dyld_entitlement(binary_path: &str) -> bool {
 /// or hardened without dyld entitlement): silent dyld env stripping
 /// would trace with zero hooks and the user would never know
 fn check_sip_and_codesign(binary_path: &str) -> Result<(), String> {
+    // arm64e binaries refuse any arm64 dylib at dyld load time (SIGABRT),
+    // independent of SIP: flag it before spawning so the user gets a reason
+    let file_out = Command::new("file")
+        .arg("-b")
+        .arg(binary_path)
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .unwrap_or_default();
+    if file_out.contains("arm64e") {
+        return Err(format!(
+            "'{}' is an arm64e binary: dyld refuses to load a standard arm64 dylib into it (Apple restricts PAC-enabled arm64e to their own components).",
+            binary_path
+        ));
+    }
+
     if !is_sip_enabled() {
         return Ok(());
     }

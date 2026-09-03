@@ -14,7 +14,7 @@ def native():
     r = subprocess.run([BIN], capture_output=True, text=True)
     return float(r.stdout.split()[0])
 
-def frida_bench(agent_file):
+def frida_bench(agent_code):
     import frida
     try: os.unlink(RESULT)
     except: pass
@@ -22,8 +22,7 @@ def frida_bench(agent_file):
     pid = frida.spawn([BIN])
     session = frida.attach(pid)
 
-    with open(os.path.join(DIR, agent_file)) as f:
-        script = session.create_script(f.read())
+    script = session.create_script(agent_code)
 
     msg_log = []
     def on_message(msg, data):
@@ -48,9 +47,7 @@ def frida_bench(agent_file):
     except:
         return None, msg_log
 
-EMPTY_AGENT = "frida_empty_agent.js"
-with open(os.path.join(DIR, EMPTY_AGENT), "w") as f:
-    f.write("""
+EMPTY_AGENT = """
     Interceptor.attach(Module.findExportByName(null, 'open'), {
         onEnter(args) {},
         onLeave(retval) {}
@@ -59,7 +56,7 @@ with open(os.path.join(DIR, EMPTY_AGENT), "w") as f:
         onEnter(args) {},
         onLeave(retval) {}
     });
-    """)
+"""
 
 if __name__ == "__main__":
     compile()
@@ -85,7 +82,8 @@ if __name__ == "__main__":
     print(f"\n  Frida real tracing — read path + format string (5 runs)...")
     vals = []
     for i in range(5):
-        ns, msgs = frida_bench("frida_real_trace.js")
+        with open(os.path.join(DIR, "frida_real_trace.js")) as f:
+            ns, msgs = frida_bench(f.read())
         if ns: vals.append(ns); print(f"    run {i+1}: {ns:.2f} ns")
     if vals:
         favg = sum(vals)/len(vals)

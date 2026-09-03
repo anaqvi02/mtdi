@@ -6,7 +6,7 @@
 //   - stat storms (enoent hunting)
 //   - send/recv on fd < 3, zero-length sends
 //   - exit status != 0
-// logs to /tmp/mtdi_bughunt_<tag>.log; open outside the lock,
+// logs to /tmp/mtdi_bughunt_vlc.log; open outside the lock,
 // write inside, re-entrancy guard (our own open() re-fires the hook)
 
 use std::collections::HashMap;
@@ -180,7 +180,9 @@ pub fn on_fork(ctx: &mut MtdiSafeContext) {
 
 pub fn on_exit(ctx: &mut MtdiSafeContext) {
     let status = ctx.arg(0);
-    log_line(format!("[exit] status={}", status));
+    if status != 0 {
+        log_line(format!("[exit] status={}", status));
+    }
 }
 
 pub fn register(reg: &mut MtdiRegistry) {

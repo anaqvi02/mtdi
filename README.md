@@ -10,7 +10,7 @@ This tool, as shown below, is leagues faster than Frida's default JS-callback in
 
 ## Features
 
-- **It's pretty fast**: ~15 ns/call full-context hooks, ~1.6 ns/call syscalls (measured on Apple M3; see [Benchmarks](#benchmarks)).
+- **It's pretty fast**: ~15 ns/call full-context hooks, ~1.6 ns/call fast-path hooks (measured on Apple M3; see [Benchmarks](#benchmarks)).
 - **Hook Safety**: write a small Rust probe, `mtdi` verifies that it is safe and attaches a wrapper (amongst a few other things), compiles it, and injects it, resulting in a safe hook that will automatically unwind if panic'd (safe mode)
 - **Output formats**: human-readable, NDJSON (`-j`), or Elastic Common Schema (`-e`) for SIEM ingestion.
 - **Active manipulation**: hooks run in-process, so you can mutate arguments, spoof return values, block calls, or implement TOCTOU-style behavior changes.
@@ -67,6 +67,7 @@ CLI reference: `mtdi -h`.
 | `-j, --json` | NDJSON output |
 | `-e, --ecs` | Elastic Common Schema output |
 | `-u, --legacy-unwind <file.rs>` | Bypass AST verification; standard unwinding, panics allowed. Use if `-s` breaks |
+| `-c, --check-only` | Compile and verify a probe, then exit without injecting (used by the MCP server's `check_probe_syntax`; requires `-s`) |
 
 ## Attaching to a target
 
@@ -80,6 +81,7 @@ Two ways to get the dylib into a process:
   remote thread, and the injector first boots that thread into a real pthread
   (`pthread_create_from_mach_thread`) so dyld4's dlopen can run on it;
   a raw mach thread has no TLS and crashes dyld4 (fixed, verified). Kern 5 errors occasionally occur, and I have no solution or answer as to why.
+  The launch-only flags (`-o`, `-t`, `-j`, `-e`, `--check-only`) are rejected in attach mode: a running process's environment can't be set after the fact.
 
 ## Dynamic Instrumentation (`-s` probes)
 
@@ -201,7 +203,10 @@ examples/              C harnesses for manual testing and benchmarking
 ## Benchmarks
 
 Measured on Apple M3, `cargo run --release --bin bench` (1M iterations, warm)
-and `cargo run --release --bin bench_cold` (cache-thrashed worst case):
+and `cargo run --release --bin bench_cold` (cache-thrashed worst case).
+Warm-loop rows are hook overhead minus the naked-call baseline; cold,
+first-call, and contention rows are raw batch-timed. Timer resolution, DVFS,
+and reader-thread caveats are documented in `bench_cold.rs`:
 
 | Scenario | FullContext | FastPath |
 |---|---|---|
@@ -234,7 +239,7 @@ Given this, it's fair to call it one of the fastest DI engines in existence: ns-
 
 - Not a true syscall tracer: only the 25 built-in libc calls it hooks are visible (unlike `dtruss`, which catches everything at the kernel boundary).
 - Bypassable by code issuing raw assembly syscalls (`svc 0x80`) instead of calling libc.
-- On macOS 26 (Apple Silicon), the kernel PPL-seals a subset of libsystem_kernel's text pages, so 17 of the 25 built-in hooks can't be installed in-place (`close`, `read`, `write`, `socket`, `mmap`, ...). The engine detects this at startup and skips them with a warning; no crash, and Frida hits the same wall. Covering those requires launch-time attachment (see [Attaching](#attaching-to-a-target)). Note: the engine tests each page by forking a disposable child; on sealed pages that child dies by design, which macOS records as `mtdi_lib-*.ips` entries in `~/Library/Logs/DiagnosticReports` (parent pid = the traced process). Expected noise, not a crash; ignore them.
+- On macOS 26 (Apple Silicon), the kernel PPL-seals a subset of libsystem_kernel's text pages, so a subset of the 25 built-in hooks can't be installed in-place (`close`, `read`, `write`, `socket`, `mmap`, ...). The split varies by macOS build (14 of 25 skipped on the build this README was verified on). The engine detects this at startup and skips them with a warning; no crash, and Frida hits the same wall. Covering those requires launch-time attachment (see [Attaching](#attaching-to-a-target)). Note: the engine tests each page by forking a disposable child; on sealed pages that child dies by design, which macOS records as `mtdi_lib-*.ips` entries in `~/Library/Logs/DiagnosticReports` (parent pid = the traced process). Expected noise, not a crash; ignore them.
 - The engine can hook any exported symbol; `-s` probes can register hooks on anything dlsym-visible.
 - Memory footprint: each traced process allocates a 128-slot ring buffer, 1024 events per slot (~1152 B/event), roughly 144 MB of virtual address space, lazily backed, so physical usage stays near zero until events flow.
 - Probe handlers must not call hooked functions (e.g. opening their own log file): the harness guards against recursion (TLS depth guard drops re-entrant hook dispatches), but a handler that blocks the same mutex it uses elsewhere can still deadlock. Use the pattern from the mtdi-cli skill: guard-flag + non-reentrant file open.

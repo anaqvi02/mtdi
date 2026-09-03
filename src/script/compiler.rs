@@ -49,7 +49,8 @@ impl<'ast> Visit<'ast> for SafetyVerifier {
     fn visit_expr_binary(&mut self, node: &'ast syn::ExprBinary) {
         // rustc still emits div-by-zero checks with overflow-checks off;
         // use checked_div/checked_rem instead of raw `/` and `%`
-        if let BinOp::Div(_) | BinOp::Rem(_) = &node.op {
+        // (compound `/=`, `%=` are ExprBinary in syn 3, same hole)
+        if let BinOp::Div(_) | BinOp::Rem(_) | BinOp::DivAssign(_) | BinOp::RemAssign(_) = &node.op {
             self.errors.push(
                 "AST Verifier: Raw division '/' and modulo '%' are forbidden because dividing by zero panics. Use SafeU64's checked_div()/checked_rem() instead.".to_string(),
             );
@@ -351,8 +352,8 @@ fn is_pc_relative(insn: u32) -> bool {{
     if (insn & 0x1F000000) == 0x10000000 {{ return true; }}
     if (insn >> 26) == 0b000101 || (insn >> 26) == 0b100101 {{ return true; }}
     if (insn >> 24) == 0b01010100 {{ return true; }}
-    if ((insn >> 24) & 0b01111111) == 0b00110100 {{ return true; }}
-    if ((insn >> 24) & 0b01111111) == 0b00110110 {{ return true; }}
+    if ((insn >> 25) & 0b00111111) == 0b011010 {{ return true; }}
+    if ((insn >> 25) & 0b00111111) == 0b011011 {{ return true; }}
     if (insn & 0x3B000000) == 0x18000000 {{ return true; }}
     false
 }}
@@ -406,7 +407,7 @@ fn relocate_instruction(instruction: u32, original_pc: usize, out_buffer: &mut V
         out_buffer.extend_from_slice(&target.to_le_bytes());
         return;
     }}
-    if ((instruction >> 24) & 0b01111111) == 0b00110100 {{
+    if ((instruction >> 25) & 0b00111111) == 0b011010 {{
         let mut imm = (instruction >> 5) & 0x7FFFF;
         if (imm & 0x40000) != 0 {{ imm |= 0xFFF80000; }}
         let target = (original_pc as i64 + (imm as i32 as i64 * 4)) as u64;
@@ -417,7 +418,7 @@ fn relocate_instruction(instruction: u32, original_pc: usize, out_buffer: &mut V
         out_buffer.extend_from_slice(&target.to_le_bytes());
         return;
     }}
-    if ((instruction >> 24) & 0b01111111) == 0b00110110 {{
+    if ((instruction >> 25) & 0b00111111) == 0b011011 {{
         let mut imm = (instruction >> 5) & 0x3FFF;
         if (imm & 0x2000) != 0 {{ imm |= 0xFFFFC000; }}
         let target = (original_pc as i64 + (imm as i32 as i64 * 4)) as u64;
@@ -733,13 +734,15 @@ mod tests {
         let errs = verify(
             r#"
             pub fn on_open(ctx: &mut MtdiSafeContext) {
-                let a = ctx.arg(0);
+                let mut a = ctx.arg(0);
                 let _ = a / 2;
                 let _ = a % 2;
+                a /= 2;
+                a %= 2;
             }
             "#,
         );
-        assert_eq!(errs.len(), 2, "expected div+rem violations: {errs:?}");
+        assert_eq!(errs.len(), 4, "expected div+rem+divassign+remassign violations: {errs:?}");
         assert!(
             errs.iter()
                 .all(|e| e.contains("checked_div") || e.contains("checked_rem"))

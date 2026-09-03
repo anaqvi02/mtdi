@@ -97,7 +97,7 @@ def trace_process(target: str, script_code: str, duration_seconds: int = 5, lega
     Args:
         target: The executable path or PID to trace.
         script_code: The Rust probe code to compile and inject.
-        duration_seconds: How many seconds to trace before gracefully stopping. (0 = check compilation only)
+        duration_seconds: How many seconds to trace before gracefully stopping. (0 = quick 2s smoke run; use check_probe_syntax for compile-only)
         legacy_unwind: If True, uses the -u flag to bypass AST verification and enable panicking.
     """
     with tempfile.NamedTemporaryFile(mode='w', suffix='.rs', delete=False) as f:
@@ -128,7 +128,7 @@ def trace_process(target: str, script_code: str, duration_seconds: int = 5, lega
         if duration_seconds > 0:
             time.sleep(duration_seconds)
         else:
-            time.sleep(2) # 2s compile grace for check_probe_syntax
+            time.sleep(2) # 2s smoke run before terminate
         
         proc.terminate()
         stdout, stderr = proc.communicate(timeout=2)

@@ -70,7 +70,7 @@ pub fn parse_args() -> AppArgs {
                 std::process::exit(1);
             }
             parsed.custom_dylib = Some(args.remove(0));
-        } else if args[0] == "-s" || args[0] == "--script" || args[0] == "--sandboxed" || args[0] == "--swap" {
+        } else if args[0] == "-s" || args[0] == "--script" {
             args.remove(0);
             if args.is_empty() {
                 eprintln!("Error: -s requires a safe Rust probe script (.rs)");
@@ -104,6 +104,23 @@ pub fn parse_args() -> AppArgs {
         parsed.cmd_args = args;
     }
 
+    if let Some(filter) = &parsed.trace_filter {
+        const KNOWN: [&str; 25] = [
+            "open", "close", "read", "write", "socket", "connect", "send", "recv",
+            "stat", "execve", "fork", "exit", "mmap", "munmap", "unlink", "rename",
+            "lstat", "fstat", "bind", "listen", "accept", "sendto", "recvfrom",
+            "mkdir", "rmdir",
+        ];
+        for name in filter.split(',') {
+            let name = name.trim();
+            if name.is_empty() || !KNOWN.contains(&name) {
+                eprintln!("Error: unknown syscall in -t: '{}'", name);
+                eprintln!("Known: {}", KNOWN.join(", "));
+                std::process::exit(1);
+            }
+        }
+    }
+
     parsed
 }
 
@@ -122,6 +139,7 @@ pub fn print_help() {
     println!("  -j, --json             Export logs in NDJSON format");
     println!("  -e, --ecs              Export logs in Elastic Common Schema (ECS) JSON format");
     println!("  -u, --legacy-unwind              Enable traditional catch_unwind safety net (permits panics/unwraps, slightly slower)");
+    println!("  -c, --check-only               Compile and verify the probe, then exit (no injection)");
     println!("  -h, --help             Print this help message and exit");
     println!();
     println!("Examples:");

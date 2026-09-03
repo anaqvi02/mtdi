@@ -188,8 +188,8 @@ pub fn inject_into_pid(pid: i32, dylib_path: &std::path::Path) {
         // diag: 'r'/'d' markers, park timespec {1,0}
         let diag: [u8; 24] = {
             let mut b = [0u8; 24];
-            b[0] = b'R';
-            b[1] = b'D';
+            // markers start zeroed: the stub sets 'R'/'D' as it runs,
+            // so the readback can tell "never started" from "dlopen failed"
             b[0x10] = 1; // tv_sec = 1
             b
         };

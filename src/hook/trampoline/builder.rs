@@ -1,6 +1,6 @@
 use super::allocator::allocate_trampoline;
 use super::relocator::relocate_instruction;
-use crate::hook::{unprotect_page, protect_page};
+use crate::hook::{protect_page, sys_icache_invalidate, unprotect_page};
 
 /// re-executes stolen prologue instructions, then branches back into
 /// the original function
@@ -37,7 +37,6 @@ pub unsafe fn build_trampoline(original_addr: usize, stolen_bytes: &[u8; 16]) ->
         16
     );
 
-    extern "C" { fn sys_icache_invalidate(start: *mut libc::c_void, len: usize); }
     sys_icache_invalidate(tramp_ptr as *mut _, trampoline_size);
 
     protect_page(tramp_addr);

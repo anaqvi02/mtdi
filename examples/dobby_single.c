@@ -69,13 +69,15 @@ int main(void) {
     } while(0)
 
     #define STATS(arr, n, label) do { \
-        SORT(arr, n); \
-        uint64_t sum = 0; int nz = 0; \
-        for (int i = 0; i < n; i++) { if (arr[i] > 0) { sum += arr[i]; nz++; } } \
-        printf("  %-24s min %3llu  p50 %3llu  p95 %3llu  max %3llu  mean %.1f ns  (zero-time: %d/%d)\n", \
-            label, arr[0], arr[n/2], arr[(int)(n*0.95)], arr[n-1], \
-            nz > 0 ? (double)sum / nz * (double)tb.numer / tb.denom : 0.0, n - nz, n); \
-    } while(0)
+            SORT(arr, n); \
+            uint64_t sum = 0; int nz = 0; \
+            for (int i = 0; i < n; i++) { if (arr[i] > 0) { sum += arr[i]; nz++; } } \
+            printf("  %-24s min %3llu  p50 %3llu  p95 %3llu  max %3llu  mean %.1f ns  (zero-time: %d/%d)\n", \
+                label, \
+                arr[0] * tb.numer / tb.denom, arr[n/2] * tb.numer / tb.denom, \
+                arr[(int)(n*0.95)] * tb.numer / tb.denom, arr[n-1] * tb.numer / tb.denom, \
+                nz > 0 ? (double)sum / nz * (double)tb.numer / tb.denom : 0.0, n - nz, n); \
+        } while(0)
 
     printf("%-26s  %s\n", "", "nanoseconds (sorted)");
     printf("------------------------------------------------------------\n");
