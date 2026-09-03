@@ -4,25 +4,25 @@
 
 `mtdi` is a high-speed tracer + dynamic-instrumentation engine that both intercepts libc/API calls in an unmodified process, and allows for inline hooking. It loads a dylib via either `DYLD_INSERT_LIBRARIES` (at launch) or via task_for_pid() (while running).
 
-This tool, as shown below, is leagues faster than Frida (somewhere around 10-100x faster), and is about the same speed as Dobby, while keeping the tool still relatively easy to use.
+This tool, as shown below, is leagues faster than Frida's default JS-callback interceptor (somewhere around 10-100x faster in our harness), and is about the same speed as Dobby, while keeping the tool still relatively easy to use.
 
 ---
 
 ## Features
 
-- **It's pretty fast** — ~15 ns/call full-context hooks, ~1.6 ns/call syscalls (measured on Apple M3; see [Benchmarks](#benchmarks)).
-- **Hook Safety** — write a small Rust probe, `mtdi` verifies that it is safe and attaches a wrapper (amongst a few other things), compiles it, and injects it, resulting in a safe hook that will automatically unwind if panic'd (safe mode)
-- **Output formats** — human-readable, NDJSON (`-j`), or Elastic Common Schema (`-e`) for SIEM ingestion.
-- **Active manipulation** — hooks run in-process, so you can mutate arguments, spoof return values, block calls, or implement TOCTOU-style behavior changes.
-- **BYO dylib** — load any pre-built dylib with `-l`, or swap `open()` entirely via `MTDI_SWAP_DYLIB`. You're not restricted to any language.
-- **MCP server** — AI-agent friendly: enumerate modules/exports, validate probe syntax, and run traces from any MCP-capable client.
+- **It's pretty fast**: ~15 ns/call full-context hooks, ~1.6 ns/call syscalls (measured on Apple M3; see [Benchmarks](#benchmarks)).
+- **Hook Safety**: write a small Rust probe, `mtdi` verifies that it is safe and attaches a wrapper (amongst a few other things), compiles it, and injects it, resulting in a safe hook that will automatically unwind if panic'd (safe mode)
+- **Output formats**: human-readable, NDJSON (`-j`), or Elastic Common Schema (`-e`) for SIEM ingestion.
+- **Active manipulation**: hooks run in-process, so you can mutate arguments, spoof return values, block calls, or implement TOCTOU-style behavior changes.
+- **BYO dylib**: load any pre-built dylib with `-l`, or swap `open()` entirely via `MTDI_SWAP_DYLIB`. You're not restricted to any language.
+- **MCP server**: AI-agent friendly: enumerate modules/exports, validate probe syntax, and run traces from any MCP-capable client.
 
 ## Requirements
 
 - macOS on **Apple Silicon** (arm64)
 - Rust toolchain (`cargo`/`rustc`) to build. Probes additionally require
   `rustc` at trace time (`-s` mode).
-- SIP does probably have to be disabled. Also, sudo.
+- SIP must be disabled, and running the CLI requires sudo.
 
 ## Build
 
@@ -32,8 +32,8 @@ cargo build --release
 
 This produces:
 
-- `target/release/mtdi` — the CLI (launcher + probe compiler)
-- `target/release/libmtdi_lib.dylib` — the injected instrumentation dylib
+- `target/release/mtdi`: the CLI (launcher + probe compiler)
+- `target/release/libmtdi_lib.dylib`: the injected instrumentation dylib
 
 ## Quick Start
 
@@ -62,7 +62,7 @@ CLI reference: `mtdi -h`.
 | `-s, --script <file.rs>` | Compile, verify, and inject a Rust probe (also known as safe mode)|
 | `-l, --load <dylib>` | Load a pre-built custom dylib |
 | `-p, --pid <PID>` | Attach to a running process (see [Attaching](#attaching-to-a-target)) |
-| `-t, --trace <calls>` | Comma-separated filter over the 25 built-in syscalls (e.g. `open,close,read,mmap`). In-place coverage on macOS 26 is 8 of 25 due to PPL — see [Limitations](#limitations) |
+| `-t, --trace <calls>` | Comma-separated filter over the 25 built-in syscalls (e.g. `open,close,read,mmap`). In-place coverage on macOS 26 is 8 of 25 due to PPL; see [Limitations](#limitations) |
 | `-o, --output <file>` | Log destination (default: stderr) |
 | `-j, --json` | NDJSON output |
 | `-e, --ecs` | Elastic Common Schema output |
@@ -72,27 +72,21 @@ CLI reference: `mtdi -h`.
 
 Two ways to get the dylib into a process:
 
-- **At launch** — `mtdi ./your_binary` (or `-s probe.rs` / `-l custom.dylib`):
+- **At launch**: `mtdi ./your_binary` (or `-s probe.rs` / `-l custom.dylib`):
   the CLI spawns the target with `DYLD_INSERT_LIBRARIES` set, so the dylib
   loads before `main()` runs. Simplest path, and the only path that can reach
   the PPL-sealed syscalls on macOS 26 (see [Limitations](#limitations)).
-- **While it's running** — `mtdi -p <PID>`: injects via `task_for_pid()` + a
+- **While it's running**: `mtdi -p <PID>`: injects via `task_for_pid()` + a
   remote thread, and the injector first boots that thread into a real pthread
-  (`pthread_create_from_mach_thread`) so dyld4's dlopen can run on it —
-  a raw mach thread has no TLS and crashes dyld4 (fixed, verified). The target
-  must be debuggable by you (same user, or root with SIP off; macOS may show a
-  one-time "…wants to control this process" consent prompt — click Allow, it is
-  not a hang; if the prompt is never allowed it times out and attach fails with
-  task_for_pid kern 5), and the PPL-sealed syscalls can't be covered this way.
-  Attach events go to the target's stderr when it's a terminal, else to
-  `$TMPDIR/mtdi_<pid>.log` (GUI apps usually have stderr on /dev/null).
+  (`pthread_create_from_mach_thread`) so dyld4's dlopen can run on it;
+  a raw mach thread has no TLS and crashes dyld4 (fixed, verified). Kern 5 errors occasionally occur, and I have no solution or answer as to why.
 
 ## Dynamic Instrumentation (`-s` probes)
 
 Write a Rust probe, register hooks on any exported symbol, and let `mtdi` compile + inject it:
 
 ```rust
-// probes/probe_open.rs — full working template
+// probes/probe_open.rs: full working template
 pub fn on_open(ctx: &mut MtdiSafeContext) {
     if let Some(path) = ctx.read_arg_str(0, 256) {
         println!("[mtdis probe] open() -> path: \"{}\", flags: {:#x}", path, ctx.arg(1));
@@ -121,20 +115,20 @@ Note: I wrote an AST to verify safe code, and to speed it up. I know that this p
 When `-u` is not given (using `-s`, not `-l`), the verifier rejects:
 
 - `.unwrap()` / `.expect()` (method *and* bare function calls)
-- raw indexing `foo[i]` — use `.get_safe(i)` (clamps out of bounds) or `.get(i)`
+- raw indexing `foo[i]`: use `.get_safe(i)` (clamps out of bounds) or `.get(i)`
 - `panic!`, `assert!`, `assert_eq!`, `assert_ne!`, `todo!`, `unimplemented!`,
   `unreachable!`
 - `panic_any`, `abort`, `exit`, `unreachable_unchecked` calls
-- raw `/` and `%` — division by zero panics even with overflow checks off; use
+- raw `/` and `%`: division by zero panics even with overflow checks off; use
   `SafeU64::checked_div()` / `checked_rem()`
 
-Everything else is fair game: loops, allocation, recursion, wrapping integer math. Your code runs inside a `#![forbid(unsafe_code)]` module. The harness compiles with `-C panic=abort`, so if something *does* panic at runtime, the traced process aborts — write code that can't panic.
+Everything else is fair game: loops, allocation, recursion, wrapping integer math. Your code runs inside a `#![forbid(unsafe_code)]` module. The harness compiles with `-C panic=abort`, so if something *does* panic at runtime, the traced process aborts; write code that can't panic.
 
 The probe API (`MtdiSafeContext`):
 
-- `arg(i)` / `set_arg(i, v)` — registers x0–x7
-- `return_val()` / `set_return_val(v)` — mutate the return value
-- `read_arg_str(i, max_len) -> Option<String>` — safely read a C string arg
+- `arg(i)` / `set_arg(i, v)`: registers x0–x7
+- `return_val()` / `set_return_val(v)`: mutate the return value
+- `read_arg_str(i, max_len) -> Option<String>`: safely read a C string arg
 
 ### Swapping syscalls
 
@@ -212,23 +206,23 @@ and `cargo run --release --bin bench_cold` (cache-thrashed worst case):
 | Scenario | FullContext | FastPath |
 |---|---|---|
 | Warm loop (1M iters) | **15–16 ns** | **1.6 ns** |
-| Cold (32 MB code + 64 MB data thrash, p50) | 42 ns | ~0 ns |
+| Cold (32 MB code + 64 MB data thrash, p50) | 42 ns | <1 ns |
 | Cold (p99) | 208 ns | 42 ns |
 | Cold (max) | 542 ns | 125 ns |
-| First call after install (one-time) | 1,750 ns | — |
+| First call after install (one-time) | 1,750 ns | n/a |
 | 8-thread contention, mean | 116 ns | 5.7 ns |
 
-`bench` measures the cost of the **hook itself** — the detour, the dispatch, and the trampoline hop — with a no-op handler, so no probe logic is in the measurement and the hooked function's own body (the same 5 nops in both baseline and hooked runs) cancels out. 
+`bench` measures the cost of the **hook itself** (the detour, the dispatch, and the trampoline hop) with a no-op handler, so no probe logic is in the measurement and the hooked function's own body (the same 5 nops in both baseline and hooked runs) cancels out. 
 
-`bench_cold` adds worst-case cache/BTB pressure and first-call effects. Real probe work (string decoding, formatting, I/O) stacks on top, but stays off the hot path — the logging hot path is an allocation-free ring-buffer write.
+`bench_cold` adds worst-case cache/BTB pressure and first-call effects. Real probe work (string decoding, formatting, I/O) stacks on top, but stays off the hot path: the logging hot path is an allocation-free ring-buffer write.
 
-Given this, it's fair to call it one of the fastest DI engines in existence — ns-scale hooks on Apple Silicon, orders of magnitude off anything interpreter-based, and comparable to the fastest native detour engines around.
+Given this, it's fair to call it one of the fastest DI engines in existence: ns-scale hooks on Apple Silicon, orders of magnitude off anything interpreter-based, and comparable to the fastest native detour engines around.
 
 ## Compatibility
 
 ### Cannot be traced (with sip off, no sudo)
 
-- **`arm64e` binaries** — Apple restricts PAC-enabled arm64e to their own components; dyld refuses to load a standard arm64 dylib into them. (eg, safari, mail, calculator, notes, etc. usually only an apple app.)
+- **`arm64e` binaries**: Apple restricts PAC-enabled arm64e to their own components; dyld refuses to load a standard arm64 dylib into them. (eg, safari, mail, calculator, notes, etc. usually only an apple app.)
 - apps that enforce library validation
 
 ### Can be traced
@@ -240,9 +234,9 @@ Given this, it's fair to call it one of the fastest DI engines in existence — 
 
 - Not a true syscall tracer: only the 25 built-in libc calls it hooks are visible (unlike `dtruss`, which catches everything at the kernel boundary).
 - Bypassable by code issuing raw assembly syscalls (`svc 0x80`) instead of calling libc.
-- On macOS 26 (Apple Silicon), the kernel PPL-seals a subset of libsystem_kernel's text pages, so 17 of the 25 built-in hooks can't be installed in-place (`close`, `read`, `write`, `socket`, `mmap`, ...). The engine detects this at startup and skips them with a warning — no crash, and Frida hits the same wall. Covering those requires launch-time attachment (see [Attaching](#attaching-to-a-target)). Note: the engine tests each page by forking a disposable child — on sealed pages that child dies by design, which macOS records as `mtdi_lib-*.ips` entries in `~/Library/Logs/DiagnosticReports` (parent pid = the traced process). Expected noise, not a crash; ignore them.
+- On macOS 26 (Apple Silicon), the kernel PPL-seals a subset of libsystem_kernel's text pages, so 17 of the 25 built-in hooks can't be installed in-place (`close`, `read`, `write`, `socket`, `mmap`, ...). The engine detects this at startup and skips them with a warning; no crash, and Frida hits the same wall. Covering those requires launch-time attachment (see [Attaching](#attaching-to-a-target)). Note: the engine tests each page by forking a disposable child; on sealed pages that child dies by design, which macOS records as `mtdi_lib-*.ips` entries in `~/Library/Logs/DiagnosticReports` (parent pid = the traced process). Expected noise, not a crash; ignore them.
 - The engine can hook any exported symbol; `-s` probes can register hooks on anything dlsym-visible.
-- Memory footprint: each traced process allocates a 128-slot ring buffer, 1024 events per slot (~1152 B/event) — roughly 144 MB of virtual address space, lazily backed, so physical usage stays near zero until events flow.
+- Memory footprint: each traced process allocates a 128-slot ring buffer, 1024 events per slot (~1152 B/event), roughly 144 MB of virtual address space, lazily backed, so physical usage stays near zero until events flow.
 - Probe handlers must not call hooked functions (e.g. opening their own log file): the harness guards against recursion (TLS depth guard drops re-entrant hook dispatches), but a handler that blocks the same mutex it uses elsewhere can still deadlock. Use the pattern from the mtdi-cli skill: guard-flag + non-reentrant file open.
 
 ## MCP Server
