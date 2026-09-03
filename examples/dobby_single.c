@@ -1,5 +1,4 @@
-// dobby_single.c — measure SINGLE CALL overhead with mach_absolute_time.
-// No averaging tricks, no pipeline absorption.
+// single-call overhead via mach_absolute_time
 #include <stdio.h>
 #include <string.h>
 #include <mach/mach_time.h>
@@ -13,7 +12,6 @@ void __attribute__((noinline)) target_func(void) {
 static void fake_func(void) {}
 
 static void instrument_cb(void *address, DobbyRegisterContext *ctx) {
-    // Empty — just measure dispatch cost
 }
 
 int main(void) {
@@ -26,10 +24,9 @@ int main(void) {
     printf("mach_absolute_time resolution: %.2f ns/tick\n", (double)tb.numer / tb.denom);
     printf("Measuring single-call overhead over %d samples\n\n", SAMPLES);
 
-    // Warm up branch predictor
+    // warm up branch predictor
     for (int i = 0; i < WARMUP; i++) target_func();
 
-    // --- Native single-call ---
     uint64_t native_times[SAMPLES];
     for (int i = 0; i < SAMPLES; i++) {
         uint64_t t0 = mach_absolute_time();
@@ -38,11 +35,9 @@ int main(void) {
         native_times[i] = t1 - t0;
     }
 
-    // --- DobbyHook single-call ---
     void *orig = NULL;
     DobbyHook((void *)target_func, (void *)fake_func, &orig);
 
-    // Warm up the hook
     for (int i = 0; i < WARMUP; i++) target_func();
 
     uint64_t hook_times[SAMPLES];
@@ -54,7 +49,6 @@ int main(void) {
     }
     DobbyDestroy((void *)target_func);
 
-    // --- DobbyInstrument single-call ---
     DobbyInstrument((void *)target_func, instrument_cb);
 
     for (int i = 0; i < WARMUP; i++) target_func();
@@ -68,7 +62,6 @@ int main(void) {
     }
     DobbyDestroy((void *)target_func);
 
-    // Sort and compute stats
     #define SORT(arr, n) do { \
         for (int i = 0; i < n-1; i++) \
             for (int j = i+1; j < n; j++) \

@@ -1,5 +1,4 @@
-// probes/probe_fstat_only.rs
-// Bisect step 7: hook ONLY fstat (fd in arg0 — never read_arg_str(0) on fstat).
+// bisect 7: hook only fstat (fd in arg0; never read_arg_str(0))
 
 pub fn on_fstat(ctx: &mut MtdiSafeContext) {
     let fd = ctx.arg(0);

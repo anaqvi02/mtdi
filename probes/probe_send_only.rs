@@ -1,5 +1,4 @@
-// probes/probe_send_only.rs
-// Bisect step 13: hook ONLY send (never fires during startup; tests its INSTALL).
+// bisect 13: hook only send (never fires at startup; tests install)
 
 pub fn on_send(ctx: &mut MtdiSafeContext) { let _ = ctx.arg(0); }
 

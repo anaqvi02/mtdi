@@ -1,5 +1,4 @@
-// probes/probe_lstat_only.rs
-// Bisect step 8: hook ONLY lstat.
+// bisect 8: hook only lstat
 
 pub fn on_lstat(ctx: &mut MtdiSafeContext) {
     if let Some(path) = ctx.read_arg_str(0, 256) {

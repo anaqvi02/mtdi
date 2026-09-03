@@ -109,7 +109,7 @@ def trace_process(target: str, script_code: str, duration_seconds: int = 5, lega
         if legacy_unwind:
             cmd.append("-u")
         cmd.extend(["-s", script_path])
-        # Numeric targets are PIDs (-p attach); anything else is a program name.
+        # numeric = pid (-p attach); anything else = program name
         attach_mode = str(target).strip().isdigit()
         if attach_mode:
             cmd.extend(["-p", str(target)])
@@ -128,15 +128,14 @@ def trace_process(target: str, script_code: str, duration_seconds: int = 5, lega
         if duration_seconds > 0:
             time.sleep(duration_seconds)
         else:
-            time.sleep(2) # Give it 2 seconds to compile for check_probe_syntax
+            time.sleep(2) # 2s compile grace for check_probe_syntax
         
         proc.terminate()
         stdout, stderr = proc.communicate(timeout=2)
         
         result = f"STDOUT:\n{stdout}\n\nSTDERR:\n{stderr}"
         if attach_mode:
-            # Attach events go to $TMPDIR/mtdi_<pid>.log (target stderr is
-            # usually /dev/null for GUI apps) — relay them here.
+            # attach logs go to $TMPDIR/mtdi_<pid>.log (gui stderr is /dev/null)
             log_path = os.path.join(os.environ.get("TMPDIR", "/tmp"), f"mtdi_{target}.log")
             if os.path.exists(log_path):
                 try:
@@ -162,8 +161,8 @@ def enumerate_modules(pid: int, filter_query: str = "") -> str:
         filter_query: Optional string to filter the modules (e.g. 'libSystem').
     """
     try:
-        # vmmap (not lsof): shows the MAIN binary plus every mapped image,
-        # which lsof's open-file list misses; also more stable column layout.
+        # vmmap not lsof: shows main binary + every mapped image,
+        # which lsof misses; also stabler column layout
         modules = set()
         ps = subprocess.run(["ps", "-o", "comm=", "-p", str(pid)], capture_output=True, text=True)
         main_bin = ps.stdout.strip()
@@ -321,7 +320,7 @@ The real probe API (see `mtdi://examples/syscall`):
 def syscall_example() -> str:
     """Boilerplate for a syscall hook."""
     return '''// MTDI probe: hook open() and log the path.
-// The engine wraps this in a #![forbid(unsafe_code)] module and verifies
+// the engine wraps this in a #![forbid(unsafe_code)] module and verifies
 // the AST (see mtdi://docs/ast_rules) before compiling with -C panic=abort.
 
 pub fn on_open(ctx: &mut MtdiSafeContext) {

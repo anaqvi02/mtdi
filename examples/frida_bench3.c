@@ -1,4 +1,3 @@
-// frida_bench3.c — same target, but writes timing to file
 #include <stdio.h>
 #include <time.h>
 

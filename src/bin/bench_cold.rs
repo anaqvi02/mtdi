@@ -1,17 +1,9 @@
-// bench_cold.rs — worst-case hook-cost battery for MTDI.
-// Measures the detour under hostile conditions: cold i-cache (32MB of random
-// indirect calls), evicted TLB/data caches (64MB touch), first-call-after-
-// install, and 8-thread contention on the dispatcher's global hook mutex.
-//
-// Run: cargo run --release --bin bench_cold
-//
-// Honest caveats:
-//  - per-call timings use mach_absolute_time (24MHz => ~42ns ticks on M-series),
-//    so single-shot numbers are coarse; means are batch-timed via Instant.
-//  - macOS DVFS may boost mid-run; "cold silicon" is approximated by a fresh
-//    process + cache thrash, not an actual thermal reset.
-//  - the dylib constructor's log-reader thread spins in the background of this
-//    process (it hooks libc::open at load), stealing ~1 core during contention.
+// worst-case hook cost: cold icache, evicted caches, first call, contention
+// run: cargo run --release --bin bench_cold
+// caveats: mach_absolute_time ticks ~42ns on m-series, single shots coarse
+// means batch-timed via instant; dvfs may boost mid-run
+// "cold" = fresh process + thrash, not a thermal reset
+// the log-reader thread spins in the background, stealing ~1 core during contention
 
 use std::arch::global_asm;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -87,20 +79,19 @@ pub fn handler_ctx(_ctx: &mut RegisterContext) {}
 
 static TRAMP_FAST: AtomicUsize = AtomicUsize::new(0);
 
-/// FastPath forwarding handler: loads the trampoline address and jumps to it.
+/// detour target: loads trampoline addr and jumps to it
 ///
 /// # Safety
-/// `TRAMP_FAST` must be initialized (by `install_hook`) before the first call;
-/// the engine invokes this via the detour with arbitrary register state.
+/// TRAMP_FAST must be initialized before first call
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fast_handler() {
-    // Forward through the trampoline, exactly like the real FastPath (my_open).
+    // forward through the trampoline, like the real fastpath
     let tramp = TRAMP_FAST.load(Ordering::Relaxed);
     let f: unsafe extern "C" fn() = core::mem::transmute(tramp);
     f();
 }
 
-// --- thrashers ---------------------------------------------------------
+// thrashers
 
 const THRASH_CODE_BYTES: usize = 32 * 1024 * 1024; // > L2i on M1/M2
 const THRASH_CODE_FNS: usize = THRASH_CODE_BYTES / 4;
@@ -123,7 +114,7 @@ fn init_thrashers() {
         for chunk in bytes.chunks_mut(4) {
             chunk.copy_from_slice(&0xD65F03C0u32.to_le_bytes()); // ret
         }
-        // Two-phase: RW -> R-X (macOS blocks anonymous RWX mappings)
+        // rw then r-x: macOS blocks anon rwx
         let kr = mach_vm_protect(
             mach_task_self(),
             c as u64,
@@ -162,8 +153,7 @@ impl XorShift {
     }
 }
 
-// Execute `n` random 4-byte functions spread across 32MB: thrashes the BTB,
-// i-cache and TLB with unpredictable indirect branches.
+// random 4-byte fns across 32mb: thrashes btb, icache, tlb
 #[inline(never)]
 fn thrash_code(rng: &mut XorShift, n: usize) {
     unsafe {
@@ -175,8 +165,7 @@ fn thrash_code(rng: &mut XorShift, n: usize) {
     }
 }
 
-// Touch 64MB of data: evicts L1/L2 data caches and the TLB entries for the
-// hook's own pages (thunk, trampoline, queue, hook map).
+// 64mb touch: evicts l1/l2 and tlb entries for the hook's own pages
 #[inline(never)]
 fn thrash_data() {
     unsafe {
@@ -190,7 +179,7 @@ fn thrash_data() {
     }
 }
 
-// --- measurements ------------------------------------------------------
+// measurements
 
 fn stat(t: &[f64], label: &str) {
     let mut s = t.to_vec();
@@ -259,8 +248,7 @@ fn main() {
     TRAMP_FAST.store(tfast, Ordering::Relaxed);
 
     println!("[1] FullContext");
-    // first call after install: everything cold, predictor empty, i-cache
-    // still recovering from the install-time invalidations
+    // first call: everything cold, predictor empty
     let t0 = now_ns();
     unsafe { t_ctx() };
     let first = now_ns() - t0;

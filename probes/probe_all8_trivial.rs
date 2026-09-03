@@ -1,6 +1,5 @@
-// probes/probe_all8_trivial.rs
-// Bisect step 9: ALL 8 writable hooks, TRIVIAL handlers (no I/O, no strings).
-// Crashes here => bug in hook machinery at >=N hooks, not handler weight.
+// bisect 9: all 8 writable hooks, trivial handlers
+// crash => hook machinery at >=n hooks, not handler weight
 
 pub fn on_open(ctx: &mut MtdiSafeContext) { let _ = ctx.arg(0); }
 pub fn on_stat(ctx: &mut MtdiSafeContext) { let _ = ctx.arg(0); }

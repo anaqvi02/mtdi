@@ -1,5 +1,4 @@
-// probes/probe_open_only.rs
-// Bisect step 5: hook ONLY open. If Firefox survives, open's hook is innocent.
+// bisect 5: hook only open; if the target survives, it's innocent
 
 pub fn on_open(ctx: &mut MtdiSafeContext) {
     if let Some(path) = ctx.read_arg_str(0, 256) {

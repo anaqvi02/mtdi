@@ -45,9 +45,9 @@ pub fn install_hook(name: &str, target_addr: usize, hook_type: HookType) -> Resu
             let thunk_addr = hook_thunk as usize as u64;
 
             let mut stub = [0u8; 32];
-            stub[0..4].copy_from_slice(&0x58000070u32.to_le_bytes()); // LDR X16, #12
-            stub[4..8].copy_from_slice(&0x58000091u32.to_le_bytes()); // LDR X17, #16
-            stub[8..12].copy_from_slice(&0xD61F0220u32.to_le_bytes()); // BR X17
+            stub[0..4].copy_from_slice(&0x58000070u32.to_le_bytes()); // ldr x16, #12
+            stub[4..8].copy_from_slice(&0x58000091u32.to_le_bytes()); // ldr x17, #16
+            stub[8..12].copy_from_slice(&0xD61F0220u32.to_le_bytes()); // br x17
             stub[12..20].copy_from_slice(&hook_id.to_le_bytes());
             stub[20..28].copy_from_slice(&thunk_addr.to_le_bytes());
 

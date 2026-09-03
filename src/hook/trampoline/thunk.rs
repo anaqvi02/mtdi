@@ -17,9 +17,9 @@ global_asm!(r#"
     .global _hook_thunk
     .align 4
 _hook_thunk:
-    // We arrive here from a tiny stub that loaded the Hook ID into x16.
+    // stub loaded hook id into x16
     
-    // Allocate space for Q registers first (512 bytes)
+    // q regs first (512 bytes)
     sub sp, sp, #512
     stp q0, q1, [sp, #0]
     stp q2, q3, [sp, #32]
@@ -38,7 +38,7 @@ _hook_thunk:
     stp q28, q29, [sp, #448]
     stp q30, q31, [sp, #480]
 
-    // Allocate space for X registers + SP + CPSR + HookID (272 bytes)
+    // x regs + sp + cpsr + hook id (272 bytes)
     sub sp, sp, #272
     stp x0, x1, [sp, #0]
     stp x2, x3, [sp, #16]
@@ -56,32 +56,32 @@ _hook_thunk:
     stp x26, x27, [sp, #208]
     str x28, [sp, #224]
 
-    // Save FP and LR
+    // save fp and lr
     stp x29, x30, [sp, #232]
 
-    // Save original SP
+    // save original sp
     add x0, sp, #784
     str x0, [sp, #248]
 
-    // Save CPSR
+    // save cpsr
     mrs x0, nzcv
     str x0, [sp, #256]
 
-    // Save hook_id (which is in x16)
+    // save hook id (in x16)
     str x16, [sp, #264]
 
-    // Call Rust Dispatcher
+    // call rust dispatcher
     mov x0, sp
     bl _hook_dispatcher
     
-    // Restore CPSR
+    // restore cpsr
     ldr x0, [sp, #256]
     msr nzcv, x0
 
-    // Restore FP and LR
+    // restore fp and lr
     ldp x29, x30, [sp, #232]
 
-    // Restore X0-X28
+    // restore x0-x28
     ldp x0, x1, [sp, #0]
     ldp x2, x3, [sp, #16]
     ldp x4, x5, [sp, #32]
@@ -98,10 +98,10 @@ _hook_thunk:
     ldp x26, x27, [sp, #208]
     ldr x28, [sp, #224]
 
-    // Deallocate X registers block
+    // dealloc x regs block
     add sp, sp, #272
 
-    // Restore Q registers
+    // restore q regs
     ldp q0, q1, [sp, #0]
     ldp q2, q3, [sp, #32]
     ldp q4, q5, [sp, #64]
@@ -119,10 +119,10 @@ _hook_thunk:
     ldp q28, q29, [sp, #448]
     ldp q30, q31, [sp, #480]
 
-    // Deallocate Q registers block
+    // dealloc q regs block
     add sp, sp, #512
     
-    // Jump to the trampoline address which was stored in x16 by the dispatcher
+    // jump to trampoline (addr in x16)
     br x16
 "#);
 
@@ -137,7 +137,7 @@ pub extern "C" fn hook_dispatcher(ctx: &mut RegisterContext) {
         if let Some(handler) = hook_info.handler {
             handler(ctx);
         }
-        // Tell the thunk where to jump when it returns
+        // tell thunk where to jump on return
         ctx.x[16] = hook_info.trampoline_addr as u64;
     }
 }

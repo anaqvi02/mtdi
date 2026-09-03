@@ -6,7 +6,7 @@ pub fn relocate_instruction(instruction: u32, original_pc: usize, out_buffer: &m
         return;
     }
 
-    // 1. ADR / ADRP
+    // 1. adr/adrp
     if (instruction & 0x9F000000) == 0x10000000 || (instruction & 0x9F000000) == 0x90000000 {
         let is_adrp = (instruction & 0x80000000) != 0;
         let rd = instruction & 0x1F;
@@ -26,7 +26,7 @@ pub fn relocate_instruction(instruction: u32, original_pc: usize, out_buffer: &m
             (original_pc as i64 + imm) as u64
         };
         
-        // LDR Xd, #8; B #12; .dword target
+        // ldr xd, #8; b #12; .dword target
         let ldr = 0x58000040 | rd;
         let b = 0x14000003u32;
         out_buffer.extend_from_slice(&ldr.to_le_bytes());
@@ -35,7 +35,7 @@ pub fn relocate_instruction(instruction: u32, original_pc: usize, out_buffer: &m
         return;
     }
 
-    // 2. Unconditional Branch (B / BL)
+    // 2. b/bl
     if (instruction >> 26) == 0b000101 || (instruction >> 26) == 0b100101 {
         let is_bl = (instruction & 0x80000000) != 0;
         let mut imm = instruction & 0x03FFFFFF;
@@ -46,14 +46,14 @@ pub fn relocate_instruction(instruction: u32, original_pc: usize, out_buffer: &m
         let target = (original_pc as i64 + (imm * 4)) as u64;
         
         if !is_bl {
-            // LDR x16, #8; BR x16; .dword target
+            // ldr x16, #8; br x16; .dword target
             let ldr_x16 = 0x58000050u32;
             let br_x16 = 0xD61F0200u32;
             out_buffer.extend_from_slice(&ldr_x16.to_le_bytes());
             out_buffer.extend_from_slice(&br_x16.to_le_bytes());
             out_buffer.extend_from_slice(&target.to_le_bytes());
         } else {
-            // LDR x30, #12; LDR x16, #16; BR x16; .dword return_address; .dword target
+            // ldr x30, #12; ldr x16, #16; br x16; .dword ret; .dword target
             let ldr_x30 = 0x5800007Eu32;
             let ldr_x16 = 0x58000090u32;
             let br_x16 = 0xD61F0200u32;
@@ -68,7 +68,7 @@ pub fn relocate_instruction(instruction: u32, original_pc: usize, out_buffer: &m
         return;
     }
 
-    // 3. Conditional Branch (B.cond)
+    // 3. b.cond
     if (instruction >> 24) == 0b01010100 {
         let mut imm = (instruction >> 5) & 0x7FFFF;
         if (imm & 0x40000) != 0 { imm |= 0xFFF80000; }
@@ -78,7 +78,7 @@ pub fn relocate_instruction(instruction: u32, original_pc: usize, out_buffer: &m
         let cond = instruction & 0xF;
         let inv_cond = cond ^ 1;
         
-        // B.inv_cond #20; LDR x16, #8; BR x16; .dword target
+        // b.inv_cond #20; ldr x16, #8; br x16; .dword target
         let b_inv_cond = 0x54000000 | (5 << 5) | inv_cond;
         let ldr_x16 = 0x58000050u32;
         let br_x16 = 0xD61F0200u32;
@@ -90,7 +90,7 @@ pub fn relocate_instruction(instruction: u32, original_pc: usize, out_buffer: &m
         return;
     }
     
-    // 4. CBZ / CBNZ
+    // 4. cbz/cbnz
     if ((instruction >> 24) & 0b01111111) == 0b00110100 {
         let mut imm = (instruction >> 5) & 0x7FFFF;
         if (imm & 0x40000) != 0 { imm |= 0xFFF80000; }
@@ -110,7 +110,7 @@ pub fn relocate_instruction(instruction: u32, original_pc: usize, out_buffer: &m
         return;
     }
     
-    // 5. TBZ / TBNZ
+    // 5. tbz/tbnz
     if ((instruction >> 24) & 0b01111111) == 0b00110110 {
         let mut imm = (instruction >> 5) & 0x3FFF;
         if (imm & 0x2000) != 0 { imm |= 0xFFFFC000; }
@@ -130,7 +130,7 @@ pub fn relocate_instruction(instruction: u32, original_pc: usize, out_buffer: &m
         return;
     }
     
-    // 6. LDR (literal)
+    // 6. ldr literal
     if (instruction & 0x3B000000) == 0x18000000 {
         let mut imm = (instruction >> 5) & 0x7FFFF;
         if (imm & 0x40000) != 0 { imm |= 0xFFF80000; }

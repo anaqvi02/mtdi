@@ -1,4 +1,4 @@
-// syscall_bench.c — calls open() in a loop so we can measure Frida's real tracing overhead.
+// open() loop: frida real-trace overhead vs native
 #include <stdio.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -8,7 +8,6 @@
 int main(void) {
     const long long ITERATIONS = 1000000LL;
 
-    // Create a temp file to open/close
     char path[] = "/tmp/_mtdi_bench.XXXXXX";
     int fd = mkstemp(path);
     close(fd);

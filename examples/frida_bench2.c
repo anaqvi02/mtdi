@@ -1,5 +1,4 @@
-// frida_bench2.c — writes timing to /tmp/frida_bench_result.txt
-// so we can read it after Frida kills the process.
+// writes timing to /tmp/frida_bench_result.txt
 #include <stdio.h>
 #include <time.h>
 #include <unistd.h>
@@ -22,14 +21,13 @@ int main(void) {
                       + (double)(end.tv_nsec - start.tv_nsec);
     double per_call_ns = elapsed_ns / ITERATIONS;
 
-    // Write to file for Frida runs (Frida may kill us before stdout flushes)
     FILE *f = fopen("/tmp/frida_bench_result.txt", "w");
     if (f) {
         fprintf(f, "%.2f\n", per_call_ns);
         fclose(f);
     }
 
-    // Also print to stdout for native runs
+    // stdout for native runs
     printf("%.2f ns/call (%lld iterations)\n", per_call_ns, ITERATIONS);
     return 0;
 }

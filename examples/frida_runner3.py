@@ -73,7 +73,6 @@ if __name__ == "__main__":
     print("  Frida Overhead at Different Levels (1M iterations)")
     print("=" * 65)
 
-    # Native baseline
     natives = [native() for _ in range(10)]
     navg = sum(natives) / len(natives)
     print(f"\n  Native baseline:  {navg:.2f} ns/call")

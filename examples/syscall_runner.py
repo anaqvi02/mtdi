@@ -33,7 +33,6 @@ def frida_bench(agent_file):
     script.load()
     frida.resume(pid)
 
-    # Wait for process to exit
     for _ in range(300):
         try:
             frida.get_process(pid)
@@ -49,7 +48,6 @@ def frida_bench(agent_file):
     except:
         return None, msg_log
 
-# Empty hook agent
 EMPTY_AGENT = "frida_empty_agent.js"
 with open(os.path.join(DIR, EMPTY_AGENT), "w") as f:
     f.write("""
@@ -71,12 +69,10 @@ if __name__ == "__main__":
     print("  open() = read path arg + format log line")
     print("=" * 70)
 
-    # Native baseline
     natives = [native() for _ in range(5)]
     navg = sum(natives) / len(natives)
     print(f"\n  Native (no hooks):     {navg:.2f} ns/syscall")
 
-    # Frida empty hooks
     print(f"\n  Frida empty hooks (5 runs)...")
     vals = []
     for i in range(5):
@@ -86,7 +82,6 @@ if __name__ == "__main__":
         favg = sum(vals)/len(vals)
         print(f"    avg: {favg:.2f} ns  |  overhead: {favg-navg:.2f} ns ({(favg-navg)/navg*100:.0f}%)")
 
-    # Frida real tracing (read path + format)
     print(f"\n  Frida real tracing — read path + format string (5 runs)...")
     vals = []
     for i in range(5):
@@ -96,7 +91,6 @@ if __name__ == "__main__":
         favg = sum(vals)/len(vals)
         print(f"    avg: {favg:.2f} ns  |  overhead: {favg-navg:.2f} ns ({(favg-navg)/navg*100:.0f}%)")
 
-    # mtdi reference
     print(f"\n  --- mtdi reference ---")
     print(f"  mtdi FastPath hook + ring buffer push: ~1.6 ns overhead")
     print(f"  mtdi formatting + I/O: on background thread (off hot path)")

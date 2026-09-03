@@ -7,8 +7,8 @@ extern "C" {
     fn sys_icache_invalidate(start: *mut libc::c_void, len: usize);
 }
 
-/// One fork per unique page, not per symbol: the 25 libc stubs share far
-/// fewer pages, and a fork copies the full page table (~1ms each).
+/// one fork per unique page, not per symbol (stubs share pages;
+/// fork copies page tables, ~1ms each)
 static PROBED_PAGES: [core::sync::atomic::AtomicUsize; 32] =
     [const { core::sync::atomic::AtomicUsize::new(0) }; 32];
 static PROBED_N: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
@@ -40,13 +40,8 @@ fn probe_page(page_start: usize, addr: usize) -> bool {
     }
 }
 
-/// Safely probes whether the page containing `addr` accepts writes, without
-/// risking the process. On Apple Silicon, PPL-protected shared-cache pages
-/// (a subset of libsystem_kernel's text) make mach_vm_protect report success
-/// but fault on the actual write — which would kill the whole traced process.
-/// The probe runs in a forked child that re-protects the page itself, so a
-/// fault takes down only the child; the parent classifies via waitpid.
-/// Verdicts are cached per page (entry = page | writable bit).
+/// probes write-ability in a forked child so a fault (e.g. PPL) kills
+/// only the child; verdicts cached per page
 fn page_accepts_writes(addr: usize) -> bool {
     let page_start = addr & !(16384 - 1);
     for e in PROBED_PAGES.iter() {
@@ -64,9 +59,8 @@ fn page_accepts_writes(addr: usize) -> bool {
     writable
 }
 
-/// Returns the mach_vm_protect result (KERN_SUCCESS = writable, anything else
-/// means the page refused to become writable — e.g. PPL-protected shared-cache
-/// pages on Apple Silicon — and the caller must NOT write to it).
+/// mach_vm_protect result: non-success = page refuses writes (e.g. ppl),
+/// caller must not write
 pub fn unprotect_page(addr: usize) -> kern_return_t {
     let page_size = 16384;
     let page_start = addr & !(page_size - 1);
@@ -95,14 +89,12 @@ pub fn protect_page(addr: usize) -> kern_return_t {
     }
 }
 
-/// Overwrites the first 16 bytes at `target_addr` with an absolute jump to
-/// `hook_addr` (LDR X16, #8; BR X16; .dword hook_addr), after unprotecting
-/// and re-protecting the containing page.
+/// overwrites 16 bytes at target with an absolute jump to hook
+/// (ldr x16,#8; br x16; .dword hook), unprotecting and re-protecting the page
 ///
 /// # Safety
-/// `target_addr` must point to at least 16 bytes of mapped, executable memory
-/// (typically the prologue of a live function). The caller must ensure no other
-/// thread is executing those bytes concurrently.
+/// target must be 16+ bytes of mapped executable memory; no other thread
+/// may be executing it concurrently
 pub unsafe fn overwrite_with_jump(target_addr: usize, hook_addr: usize) -> Result<[u8; 16], String> {
     let target_ptr = target_addr as *mut u8;
 
@@ -114,9 +106,8 @@ pub unsafe fn overwrite_with_jump(target_addr: usize, hook_addr: usize) -> Resul
     payload[4..8].copy_from_slice(&0xD61F0200u32.to_le_bytes()); // br x16
     payload[8..16].copy_from_slice(&(hook_addr as u64).to_le_bytes());
 
-    // Probe FIRST, on the pristine page: the forked child must be the one to
-    // unprotect + write, or the COW materialization faults even on writable
-    // pages (PPL quirk).
+    // probe first on the pristine page; the child must do the writes,
+    // or cow materialization faults even on writable pages
     if !page_accepts_writes(target_addr) {
         return Err(format!(
             "page at {:#x} is PPL-protected (write probe faulted)",
@@ -126,8 +117,8 @@ pub unsafe fn overwrite_with_jump(target_addr: usize, hook_addr: usize) -> Resul
 
     let kr = unprotect_page(target_addr);
     if kr != mach2::kern_return::KERN_SUCCESS {
-        // Page refused to become writable (PPL-protected shared-cache page on
-        // Apple Silicon). Do NOT write — the fault would kill the process.
+        // page refused writes (ppl). do not write; the fault would kill
+        // the whole process
         return Err(format!("cannot unprotect page at {:#x} (kr={})", target_addr, kr));
     }
 

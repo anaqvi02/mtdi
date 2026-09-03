@@ -31,7 +31,6 @@ pub struct Slot {
     _pad: [u8; 48],
 }
 
-/// Formats one captured event into the output buffer (plain / NDJSON / ECS).
 pub type SlotFormatterFn = fn(&Slot, bool, bool, &mut core::fmt::Formatter) -> core::fmt::Result;
 
 impl Slot {
@@ -98,7 +97,7 @@ static INITIALIZE: unsafe extern "C" fn() = {
             INIT_MACH_TIME = mach_absolute_time();
         }
 
-        // Install our inline hooks — all 25 libc syscalls, FastPath style.
+        // install the 25 libc hooks, fastpath style
         macro_rules! install {
             ($name:literal, $libc:ident, $handler:ident, $tramp:ident) => {
                 match hook::manager::install_hook($name, libc::$libc as usize, hook::manager::HookType::FastPath($handler as usize)) {
@@ -133,9 +132,7 @@ static INITIALIZE: unsafe extern "C" fn() = {
         install!("mkdir", mkdir, my_mkdir, TRAMP_MKDIR);
         install!("rmdir", rmdir, my_rmdir, TRAMP_RMDIR);
 
-        // Optional "swap dylib" override: if MTDI_SWAP_DYLIB is set, dlopen it and
-        // load its on_open symbol. When present, my_open forwards to it instead of the
-        // real open, letting the swap dylib sandbox/rewrite open() calls.
+        // MTDI_SWAP_DYLIB: dlopen it, load on_open, my_open forwards to it
         let env_swap = c"MTDI_SWAP_DYLIB".as_ptr();
         let swap_ptr = unsafe { libc::getenv(env_swap) };
         if !swap_ptr.is_null() {
@@ -164,10 +161,8 @@ static INITIALIZE: unsafe extern "C" fn() = {
         } else if unsafe { libc::getenv(c"MTDI_OWN_SIGTERM".as_ptr()) }.is_null()
             && unsafe { libc::isatty(2) } == 0
         {
-            // Attach mode (no launch env): a GUI target's stderr is usually
-            // /dev/null, so route the trace to a file we can actually find.
-            // Launch mode always keeps the inherited stderr — the user chose
-            // that destination (possibly a redirect).
+            // attach mode: gui stderr is /dev/null, so log to a file;
+            // launch mode keeps the inherited stderr
             let tmp = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".into());
             let path = format!("{}/mtdi_{}.log", tmp, unsafe { libc::getpid() });
             if let Ok(cpath) = std::ffi::CString::new(path) {
@@ -184,8 +179,7 @@ static INITIALIZE: unsafe extern "C" fn() = {
             }
         }
 
-        // Attach mode (no MTDI_OWN_SIGTERM — only launch mode sets it): say
-        // up front that PID attach can't cover the PPL-sealed syscalls.
+        // attach mode can't cover ppl-sealed syscalls; say so up front
         if unsafe { libc::getenv(c"MTDI_OWN_SIGTERM".as_ptr()) }.is_null() {
             unsafe {
                 mtdi_log(c"[mtdi] Note: PID attach hooks only the PPL-writable syscalls (~8 of 25 on macOS 26). Full 25/25 syscall tracing requires launch-time tracing with DYLD_INTERPOSE (`mtdi <cmd>`).\n".as_ptr());
@@ -326,8 +320,8 @@ static INITIALIZE: unsafe extern "C" fn() = {
                         }
                         
                         let len = 4096 - slice.len();
-                        // Guard against re-entering my_write: the reader's own
-                        // output write must never be traced back into itself.
+                        // guard: the reader's own output write must never
+                        // be traced back into itself
                         READER_WRITING.store(true, Ordering::Relaxed);
                         libc::write(LOG_FD.load(Ordering::Relaxed), buf.as_ptr() as *const libc::c_void, len);
                         READER_WRITING.store(false, Ordering::Relaxed);
@@ -338,28 +332,22 @@ static INITIALIZE: unsafe extern "C" fn() = {
                         *head = read_idx;
                     }
                     if idle {
-                        // On shutdown (atexit), drain whatever is left and
-                        // exit, so a short-lived process never dies with
-                        // events still sitting in the ring.
+                        // atexit: drain the ring and exit, so short-lived
+                        // processes don't lose their tail
                         if SHUTDOWN.load(Ordering::Relaxed) {
                             READER_DONE.store(true, Ordering::Release);
                             break;
                         }
-                        // Sleep for real when the queue is empty. A tight poll
-                        // (100ns) hammers mach_wait_until at ~1M wakeups/sec and
-                        // taxes every core on the machine (measured: ~1.5-4x
-                        // wall-clock on unrelated work). 1ms drops that to
-                        // ~1k/sec (invisible); under sustained event flow the
-                        // queue is never empty, so this never adds latency.
+                        // real sleep when empty; a 100ns poll costs 1.5-4x
+                        // wall-clock on unrelated work (measured); 1ms is invisible
                         std::thread::sleep(std::time::Duration::from_millis(1));
                     }
                 }
             }
         });
         libc::atexit(flush_on_exit);
-        // Launch mode only (see cli/spawn.rs): take over SIGTERM so a Ctrl-C
-        // drains the ring instead of truncating the trace. Attach mode leaves
-        // the target's own signal handlers untouched.
+        // launch mode: take over sigterm so ctrl-c drains the ring;
+        // attach mode leaves the target's handlers untouched
         if !unsafe { libc::getenv(c"MTDI_OWN_SIGTERM".as_ptr()) }.is_null() {
             unsafe {
                 libc::signal(libc::SIGTERM, handle_terminate as usize);
@@ -453,8 +441,7 @@ fn push_binary_event(
 fn fmt_open(s: &Slot, j: bool, e: bool, f: &mut core::fmt::Formatter) -> core::fmt::Result {
     let path = JsonEscape(s.get_str1());
     let oflag = s.args[0]; let mode = s.args[1];
-    // The reader thread opens the outer JSON object ({"timestamp":...), runs this
-    // formatter, then closes it and appends the newline.
+    // the reader opens the outer json object, runs the formatter, closes it
     if e { write!(f, "\"event\":{{\"category\":[\"process\"],\"action\":\"open\"}},\"message\":\"[mtdi] Caught open({}, {}, {})\",\"mtdi\":{{\"path\":\"{}\",\"oflag\":{},\"mode\":{}}}", path, oflag, mode, path, oflag, mode) }
     else if j { write!(f, "\"syscall\":\"open\",\"args\":{{\"path\":\"{}\",\"oflag\":{},\"mode\":{}}}", path, oflag, mode) }
     else { write!(f, "open(\"{}\", {}, {})", s.get_str1(), oflag, mode) }
@@ -462,12 +449,10 @@ fn fmt_open(s: &Slot, j: bool, e: bool, f: &mut core::fmt::Formatter) -> core::f
 
 static TRAMP_OPEN: AtomicUsize = AtomicUsize::new(0);
 
-/// FastPath handler for `open(2)`.
+/// detour target for open(2)
 ///
 /// # Safety
-/// `path` must be a valid NUL-terminated string for the duration of the call.
-/// This is installed as a detour target by the engine and may be invoked with
-/// arbitrary register state; it preserves all registers by construction.
+/// path must be a valid nul-terminated string for the call duration
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn my_open(path: *const c_char, oflag: c_int, mode: c_int) -> c_int { unsafe {
     let p = USER_ON_OPEN.load(Ordering::Relaxed);
@@ -480,9 +465,8 @@ pub unsafe extern "C" fn my_open(path: *const c_char, oflag: c_int, mode: c_int)
     let orig_open: unsafe extern "C" fn(*const c_char, c_int, c_int) -> c_int = core::mem::transmute(tramp_addr);
     
     if !should_log(0) { return orig_open(path, oflag, mode); }
-    // NOTE: on Darwin arm64 the variadic tail of open() (the mode) is passed on the
-    // caller's stack, not in x2, so `mode` is only reliable for non-variadic callers
-    // (e.g. clang builds that pass it in registers). Cosmetic trace detail only.
+    // note: darwin arm64 passes open()'s variadic tail (mode) on the caller's
+    // stack, not x2; only reliable for non-variadic callers. cosmetic detail
     push_binary_event(fmt_open, [oflag as u64, mode as u64, 0, 0, 0, 0], path, core::ptr::null());
     orig_open(path, oflag, mode)
 }}
@@ -494,10 +478,10 @@ fn fmt_raw(s: &Slot, j: bool, e: bool, f: &mut core::fmt::Formatter) -> core::fm
     else { write!(f, "{}", s.get_str1()) }
 }
 
-/// Emits a raw log line through the event pipeline.
+/// raw log line through the event pipeline
 ///
 /// # Safety
-/// `msg` must be a valid NUL-terminated string for the duration of the call.
+/// msg must be a valid nul-terminated string
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mtdi_log(msg: *const libc::c_char) {
     if msg.is_null() { return; }
@@ -513,25 +497,18 @@ pub unsafe extern "C" fn mtdi_log(msg: *const libc::c_char) {
         }
     }
 }
-// ---------------------------------------------------------------------------
-// Built-in FastPath hooks for the remaining libc syscalls.
-//
-// Every handler follows the my_open shape: atomic trampoline load, filter
-// check, one push_binary_event (allocation-free ring-buffer write), then
-// forward through the trampoline. All formatting happens on the reader
-// thread, so the hot path never allocates or formats.
-// ---------------------------------------------------------------------------
+// every handler: trampoline load, filter, one push_binary_event, forward;
+// all formatting happens on the reader thread, never on the hot path
 
-/// Set while the reader thread is performing its own output write, so
-/// my_write never traces the logger writing to itself.
+/// set while the reader performs its own output write, so
+/// my_write never traces the logger writing to itself
 static READER_WRITING: AtomicBool = AtomicBool::new(false);
 
 static SHUTDOWN: AtomicBool = AtomicBool::new(false);
 static READER_DONE: AtomicBool = AtomicBool::new(false);
 
-/// Registered via libc::atexit: tells the reader to drain the ring and waits
-/// (bounded) so the final events of a short-lived process get flushed instead
-/// of being lost to the reader's idle sleep.
+/// atexit: drain the ring (bounded) so short-lived processes
+/// flush their tail instead of losing it to idle sleep
 extern "C" fn flush_on_exit() {
     SHUTDOWN.store(true, Ordering::Release);
     for _ in 0..100 {
@@ -542,10 +519,8 @@ extern "C" fn flush_on_exit() {
     }
 }
 
-/// Launch-mode SIGTERM handler (enabled via MTDI_OWN_SIGTERM): drains the ring
-/// like the atexit path, then re-raises with the default disposition so the
-/// process still dies with the conventional status. A Ctrl-C on the CLI
-/// forwards SIGTERM here, so the tail of the trace survives.
+/// launch-mode sigterm handler: drains like atexit, then re-raises
+/// with the default disposition so the process dies normally
 extern "C" fn handle_terminate(_sig: libc::c_int) {
     flush_on_exit();
     unsafe {
@@ -699,8 +674,7 @@ fn fmt_rmdir(s: &Slot, j: bool, e: bool, f: &mut core::fmt::Formatter) -> core::
     else { write!(f, "rmdir(\"{}\")", s.get_str1()) }
 }
 
-/// Generates a FastPath handler in the my_open shape: trampoline load,
-/// filter check, one push_binary_event, then forward through the trampoline.
+/// emits a fastpath handler in the my_open shape
 macro_rules! fastpath_hook {
     (
         $tramp:ident, $handler:ident, $bit:expr, $ret:ty, $fmt:ident,
@@ -710,8 +684,10 @@ macro_rules! fastpath_hook {
     ) => {
         static $tramp: AtomicUsize = AtomicUsize::new(0);
 
+        /// detour target; forwards via $tramp
+        ///
         /// # Safety
-        /// Installed as a detour target by the engine; forwards via `$tramp`.
+        /// may run with arbitrary register state
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn $handler($($arg: $ty),*) -> $ret {
             unsafe {
@@ -814,16 +790,16 @@ fastpath_hook!(TRAMP_RMDIR, my_rmdir, 24, c_int, fmt_rmdir,
 
 static TRAMP_WRITE: AtomicUsize = AtomicUsize::new(0);
 
-/// FastPath handler for `write(2)`.
+/// detour target for write(2)
 ///
 /// # Safety
-/// Installed as a detour target by the engine; forwards via `TRAMP_WRITE`.
+/// detour may run with arbitrary register state
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn my_write(fd: c_int, buf: *const c_void, count: usize) -> isize {
     unsafe {
         let tramp = TRAMP_WRITE.load(Ordering::Relaxed);
         let orig: unsafe extern "C" fn(c_int, *const c_void, usize) -> isize = core::mem::transmute(tramp);
-        // Never trace the logger writing to itself (feedback loop).
+        // never trace the logger writing to itself
         if !should_log(3) || READER_WRITING.load(Ordering::Relaxed) {
             return orig(fd, buf, count);
         }
@@ -834,18 +810,17 @@ pub unsafe extern "C" fn my_write(fd: c_int, buf: *const c_void, count: usize) -
 
 static TRAMP_FORK: AtomicUsize = AtomicUsize::new(0);
 
-/// FastPath handler for `fork(2)`.
+/// detour target for fork(2)
 ///
 /// # Safety
-/// Installed as a detour target by the engine; forwards via `TRAMP_FORK`.
+/// detour may run with arbitrary register state
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn my_fork() -> libc::pid_t {
     unsafe {
         let tramp = TRAMP_FORK.load(Ordering::Relaxed);
         let orig: unsafe extern "C" fn() -> libc::pid_t = core::mem::transmute(tramp);
         let pid = orig();
-        // Log in the parent only: the child inherits a COW copy of the ring
-        // buffers but no reader thread to drain them.
+        // parent only: the child inherits a cow ring but no reader thread
         if pid > 0 && should_log(10) {
             push_binary_event(fmt_fork, [pid as u64, 0, 0, 0, 0, 0], core::ptr::null(), core::ptr::null());
         }
@@ -855,10 +830,10 @@ pub unsafe extern "C" fn my_fork() -> libc::pid_t {
 
 static TRAMP_EXIT: AtomicUsize = AtomicUsize::new(0);
 
-/// FastPath handler for `exit(2)`.
+/// detour target for exit(2)
 ///
 /// # Safety
-/// Installed as a detour target by the engine; forwards via `TRAMP_EXIT`.
+/// detour may run with arbitrary register state
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn my_exit(status: c_int) -> ! {
     unsafe {

@@ -1,6 +1,4 @@
-// probes/probe_3path.rs
-// Bisect step 12: hook open+stat+lstat (3 FIRING path hooks only).
-// Tests the 3-hook threshold.
+// bisect 12: open+stat+lstat (3 firing path hooks)
 
 pub fn on_open(ctx: &mut MtdiSafeContext) { let _ = ctx.arg(0); }
 pub fn on_stat(ctx: &mut MtdiSafeContext) { let _ = ctx.arg(0); }

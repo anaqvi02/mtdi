@@ -1,5 +1,4 @@
-// probes/probe_open_fstat.rs
-// Bisect step 10: hook open + fstat (the hottest pair at the crash site), trivial.
+// bisect 10: open + fstat (hottest pair at the crash site)
 
 pub fn on_open(ctx: &mut MtdiSafeContext) { let _ = ctx.arg(0); }
 pub fn on_fstat(ctx: &mut MtdiSafeContext) { let _ = ctx.arg(0); }

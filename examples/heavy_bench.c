@@ -27,7 +27,6 @@ int main() {
 
     printf("Starting Exhaustive Benchmark Suite...\n\n");
 
-    // 1. STAT
     start = get_time();
     for (int i = 0; i < ITERS; i++) {
         stat("/dev/null", &st);
@@ -35,7 +34,6 @@ int main() {
     end = get_time();
     printf("STAT           (%6d): %.6f seconds\n", ITERS, end - start);
 
-    // 2. OPEN / CLOSE
     start = get_time();
     for (int i = 0; i < ITERS; i++) {
         int fd = open("/dev/null", O_RDONLY);
@@ -44,7 +42,6 @@ int main() {
     end = get_time();
     printf("OPEN/CLOSE     (%6d): %.6f seconds\n", ITERS, end - start);
 
-    // 3. READ
     int fd_zero = open("/dev/zero", O_RDONLY);
     start = get_time();
     for (int i = 0; i < ITERS; i++) {
@@ -54,7 +51,6 @@ int main() {
     close(fd_zero);
     printf("READ           (%6d): %.6f seconds\n", ITERS, end - start);
 
-    // 4. WRITE
     int fd_null = open("/dev/null", O_WRONLY);
     start = get_time();
     for (int i = 0; i < ITERS; i++) {
@@ -64,7 +60,6 @@ int main() {
     close(fd_null);
     printf("WRITE          (%6d): %.6f seconds\n", ITERS, end - start);
 
-    // 5. SOCKET
     start = get_time();
     for (int i = 0; i < ITERS; i++) {
         int s = socket(AF_INET, SOCK_STREAM, 0);
@@ -73,7 +68,6 @@ int main() {
     end = get_time();
     printf("SOCKET/CLOSE   (%6d): %.6f seconds\n", ITERS, end - start);
 
-    // 6. CONNECT, SEND, RECV
     int s = socket(AF_INET, SOCK_STREAM, 0);
     start = get_time();
     for (int i = 0; i < ITERS; i++) {
@@ -85,7 +79,6 @@ int main() {
     close(s);
     printf("CONN/SEND/RECV (%6d): %.6f seconds\n", ITERS, end - start);
 
-    // 7. MMAP / MUNMAP
     start = get_time();
     for (int i = 0; i < ITERS; i++) {
         void *mem = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -96,7 +89,7 @@ int main() {
     end = get_time();
     printf("MMAP/MUNMAP    (%6d): %.6f seconds\n", ITERS, end - start);
 
-    // 8. FORK / EXECVE / EXIT (doing less iterations so we don't fork bomb)
+    // fork/execve/exit (fewer iters, no fork bomb)
     char *argv[] = {"/usr/bin/true", NULL};
     char *envp[] = {NULL};
     start = get_time();

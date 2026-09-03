@@ -1,17 +1,13 @@
-// probes/probe_bughunt.rs
-// Bug-hunt probe: flags anomalous syscall ARGUMENTS in a target app.
-// Hooks run PRE-CALL (thunk saves regs -> dispatcher -> br x16 to trampoline),
-// so return values are NOT visible; bug signatures here are arg-side:
-//   - repeated opens of the same path (fd-leak / redundant-I/O signature)
-//   - write access into /Applications (app mutating its own bundle)
-//   - O_TRUNC on config-ish paths, O_CREAT with mode 0 (unreadable file bug)
-//   - stat/lstat probe storms (repeated stat of same path = ENOENT hunting)
-//   - send/recv on fd < 3 (stdio misuse), zero-length sends (busy-loop sig)
+// flags anomalous syscall args in a target app
+// pre-call hooks: return values not visible, so all signatures are arg-side:
+//   - repeated opens (fd leak / redundant io)
+//   - writes into /Applications
+//   - O_TRUNC on config paths, O_CREAT with mode 0
+//   - stat storms (enoent hunting)
+//   - send/recv on fd < 3, zero-length sends
 //   - exit status != 0
-//
-// Logs to /tmp/mtdi_bughunt_<tag>.log via the file-logging pattern:
-// lazy open OUTSIDE the lock, write INSIDE the lock, CREATING guard for
-// re-entrancy (OpenOptions::open re-fires the open hook).
+// logs to /tmp/mtdi_bughunt_<tag>.log; open outside the lock,
+// write inside, re-entrancy guard (our own open() re-fires the hook)
 
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
@@ -31,12 +27,12 @@ fn log_line(line: String) {
     if EVENTS.fetch_add(1, Ordering::Relaxed) >= EVENT_CAP {
         return;
     }
-    // Re-entrancy guard: our own OpenOptions::open() below re-fires on_open.
+    // guard: our own open() below re-fires on_open
     if CREATING.swap(true, Ordering::SeqCst) {
         return;
     }
     let f = LOG.get_or_init(|| Mutex::new(None));
-    // Check-and-open OUTSIDE the lock (never hold the lock while opening).
+    // open outside the lock
     let needs_open = {
         let g = f.lock();
         match g {
@@ -58,7 +54,7 @@ fn log_line(line: String) {
             }
         }
     }
-    // Write inside the lock.
+    // write inside the lock
     let g = f.lock();
     if let Ok(mut g2) = g {
         if let Some(fh) = g2.as_mut() {

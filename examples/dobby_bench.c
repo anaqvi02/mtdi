@@ -1,23 +1,19 @@
-// dobby_bench.c — Dobby vs mtdi inline hook overhead benchmark.
-// Same target shape as mtdi's bench: 5 nops + ret.
+// same target shape as mtdi's bench: 5 nops + ret
 #include <stdio.h>
 #include <mach/mach_time.h>
 #include <dlfcn.h>
 #include "dobby.h"
 
-// The target function — same as mtdi bench targets
 void __attribute__((noinline)) target_func(void) {
     __asm__ volatile("nop\nnop\nnop\nnop\nnop\n");
 }
 
-// DobbyInstrument callback — saves register context (like mtdi FullContext)
+// saves regs like mtdi fullcontext
 static void instrument_cb(void *address, DobbyRegisterContext *ctx) {
-    // Empty — just measure the dispatch overhead
 }
 
-// DobbyHook callback — minimal (like mtdi FastPath)
+// like mtdi fastpath
 static void fake_func(void) {
-    // Forward to original
 }
 
 int main(void) {
@@ -27,10 +23,7 @@ int main(void) {
     const long long ITERATIONS = 1000000LL;
     const int WARMUP = 10000;
 
-    // Disable near trampoline to use default Dobby behavior
-    // dobby_set_near_trampoline(false);
 
-    // --- Native baseline ---
     for (int i = 0; i < WARMUP; i++) target_func();
 
     uint64_t t0, t1;
@@ -39,7 +32,6 @@ int main(void) {
     t1 = mach_absolute_time();
     double native_ns = (double)(t1 - t0) * tb.numer / tb.denom / ITERATIONS;
 
-    // --- DobbyHook (inline hook, like FastPath) ---
     void *orig = NULL;
     DobbyHook((void *)target_func, (void *)fake_func, &orig);
 
@@ -50,7 +42,6 @@ int main(void) {
 
     DobbyDestroy((void *)target_func);
 
-    // --- DobbyInstrument (register context, like FullContext) ---
     DobbyInstrument((void *)target_func, instrument_cb);
 
     t0 = mach_absolute_time();
@@ -60,7 +51,6 @@ int main(void) {
 
     DobbyDestroy((void *)target_func);
 
-    // --- Results ---
     printf("==================================================\n");
     printf("  Dobby vs mtdi: Inline Hook Overhead\n");
     printf("  1M iterations, 5-nop + ret target\n");

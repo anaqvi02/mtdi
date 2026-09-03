@@ -47,9 +47,8 @@ impl<'ast> Visit<'ast> for SafetyVerifier {
     }
 
     fn visit_expr_binary(&mut self, node: &'ast syn::ExprBinary) {
-        // rustc emits the divide-by-zero check even with -C overflow-checks=off,
-        // so raw `/` and `%` can panic at runtime. The Zero-Panic API provides
-        // SafeU64::checked_div/checked_rem for division instead.
+        // rustc still emits div-by-zero checks with overflow-checks off;
+        // use checked_div/checked_rem instead of raw `/` and `%`
         if let BinOp::Div(_) | BinOp::Rem(_) = &node.op {
             self.errors.push(
                 "AST Verifier: Raw division '/' and modulo '%' are forbidden because dividing by zero panics. Use SafeU64's checked_div()/checked_rem() instead.".to_string(),
@@ -66,7 +65,7 @@ pub fn compile_script(script_path: &Path, legacy_unwind: bool) -> Result<PathBuf
     let user_code = fs::read_to_string(script_path)
         .map_err(|e| format!("Failed to read script file: {}", e))?;
 
-    // 1. Security & AST verification: Full AST pass to ban unsafe/panicking syntax
+    // 1. ast pass bans unsafe/panicking syntax
     if !legacy_unwind {
         let ast = syn::parse_file(&user_code)
             .map_err(|e| format!("[mtdis] AST Parse Error: {}", e))?;
@@ -82,7 +81,7 @@ pub fn compile_script(script_path: &Path, legacy_unwind: bool) -> Result<PathBuf
         }
     }
 
-    // 2. Compute unique hash for this script
+    // 2. unique hash
     let mut hasher = DefaultHasher::new();
     user_code.hash(&mut hasher);
     let code_hash = hasher.finish();
@@ -90,12 +89,12 @@ pub fn compile_script(script_path: &Path, legacy_unwind: bool) -> Result<PathBuf
     let wrapper_src_path = PathBuf::from(format!("/tmp/mtdis_wrap_{:x}.rs", code_hash));
     let out_dylib_path = PathBuf::from(format!("/tmp/mtdis_lib_{:x}.dylib", code_hash));
 
-    // 3. Generate self-contained harness with Zero-Panic API
+    // 3. generate the self-contained harness
     let full_source = generate_harness(&user_code, legacy_unwind);
     fs::write(&wrapper_src_path, full_source)
         .map_err(|e| format!("Failed to write wrapper source: {}", e))?;
 
-    // 4. Invoke rustc to compile the dylib
+    // 4. invoke rustc
     let mut cmd = Command::new("rustc");
     cmd.arg("--edition=2021")
         .arg("--crate-type")
@@ -103,8 +102,8 @@ pub fn compile_script(script_path: &Path, legacy_unwind: bool) -> Result<PathBuf
         .arg("-O");
 
     if !legacy_unwind {
-        // -C overflow-checks=off : Hardware executes math natively (wrapping silently like ARM64 C code).
-        // -C panic=abort         : Strip all DWARF unwinding branches for 100% straight-line performance.
+        // overflow-checks off: wrapping math like arm64 c
+        // panic=abort: no unwinding branches
         cmd.arg("-C").arg("overflow-checks=off")
            .arg("-C").arg("panic=abort");
     }
@@ -143,7 +142,6 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::sync::{{Mutex, OnceLock}};
 
-// Engine Internals
 
 #[repr(C)]
 #[derive(Debug)]
@@ -365,7 +363,6 @@ fn relocate_instruction(instruction: u32, original_pc: usize, out_buffer: &mut V
         return;
     }}
 
-    // PC-Relative relocations...
     if (instruction & 0x9F000000) == 0x10000000 || (instruction & 0x9F000000) == 0x90000000 {{
         let is_adrp = (instruction & 0x80000000) != 0;
         let rd = instruction & 0x1F;
@@ -513,7 +510,7 @@ fn raw_install_hook(target_addr: usize, handler: fn(&mut MtdiSafeContext)) -> Re
     }}
 }}
 
-// Safe Wrapper API
+// safe wrapper api
 
 pub struct MtdiSafeContext<'a> {{
     raw: &'a mut RegisterContext,
@@ -558,7 +555,7 @@ impl MtdiRegistry {{
     }}
 }}
 
-// Zero-Panic Math
+// zero-panic math
 
 mod user_sandbox {{
     #![forbid(unsafe_code)]
@@ -621,13 +618,11 @@ mod user_sandbox {{
         }}
     }}
 
-    // INJECT USER CODE:
+    // inject user code:
     {user_code}
 }}
 
-// ---------------------------------------------------------
-// 4. MODULE INITIALIZER
-// ---------------------------------------------------------
+// 4. module initializer
 
 #[used]
 #[link_section = "__DATA,__mod_init_func"]
@@ -636,7 +631,7 @@ static INIT: extern "C" fn() = mtdis_init;
 extern "C" fn mtdis_init() {{
     let mut reg = MtdiRegistry {{ hooks: Vec::new() }};
     
-    // Direct branchless registration (Total Functions don't panic)
+    // branchless registration (total functions don't panic)
     user_sandbox::register(&mut reg);
 
     for (symbol_name, handler) in reg.hooks {{
@@ -667,7 +662,6 @@ mod tests {
     use super::SafetyVerifier;
     use syn::visit::Visit;
 
-    /// Run the AST verifier over `code` and return the violation messages.
     fn verify(code: &str) -> Vec<String> {
         let ast = syn::parse_file(code).expect("test probe must parse");
         let mut verifier = SafetyVerifier { errors: Vec::new() };

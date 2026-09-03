@@ -1,18 +1,14 @@
-// frida_real_trace_agent.js — hooks open() and does actual work:
-// reads the path string, formats a log line, sends it to host.
-// This is what real Frida tracing looks like.
+// like a real trace: read path, format line, send
 let callCount = 0;
 
 Interceptor.attach(Module.findExportByName(null, 'open'), {
     onEnter(args) {
-        // Read the path string from the target's memory — this is real work
+        // read path from the target's memory (real work)
         try {
             var path = args[0].readUtf8String(256);
             var flags = args[1].toInt32();
-            // Format a log line like a real tracer would
+            // format a log line
             var logLine = '[frida] open("' + path + '", ' + flags + ')';
-            // In a real trace, you'd send() or write this somewhere
-            // send(logLine);
         } catch(e) {}
         callCount++;
     },

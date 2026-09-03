@@ -1,5 +1,4 @@
-// frida_bench_agent.js — hooks target_func, counts calls, reports overhead.
-// Used by frida_runner.py
+// used by frida_runner.py
 
 let callCount = 0;
 
@@ -11,10 +10,9 @@ Interceptor.attach(Module.findExportByName(null, 'target_func'), {
     }
 });
 
-// Send a ready signal
 send({ type: 'ready' });
 
-// After 3 seconds, tell the Python side to stop
+// after 3s, signal done to the runner
 setTimeout(() => {
     send({ type: 'done', callCount: callCount });
 }, 3000);

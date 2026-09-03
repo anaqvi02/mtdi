@@ -31,8 +31,7 @@ def run_with_frida():
     script.load()
     frida.resume(pid)
 
-    # Wait for process to exit naturally (the binary runs 1M iterations then exits)
-    # frida.get_process() will throw when the process is gone
+    # throws when the process is gone
     for _ in range(300):  # 30s max
         try:
             frida.get_process(pid)
@@ -42,9 +41,7 @@ def run_with_frida():
 
     session.detach()
 
-    # Now re-run natively but intercept stdout via a wrapper
-    # Actually, frida.spawn captures the child — we can't get its stdout.
-    # So we'll use a different strategy: use frida-trace CLI which shows timing.
+    # frida.spawn captures the child, so we can't get its stdout
 
     return None
 
@@ -52,7 +49,6 @@ def run_frida_trace():
     """Use frida-trace CLI to hook target_func and let the binary self-time."""
     import subprocess, signal
 
-    # Start the binary in background, attach frida-trace, let it run
     proc = subprocess.Popen(
         [BENCH_BIN],
         stdout=subprocess.PIPE,
@@ -60,10 +56,8 @@ def run_frida_trace():
         text=True
     )
 
-    # Give it a moment to start
     time.sleep(0.05)
 
-    # Attach frida-trace to the running process
     trace = subprocess.Popen(
         ["frida-trace", "-p", str(proc.pid), "-i", "target_func", "-q"],
         stdout=subprocess.PIPE,
@@ -71,7 +65,6 @@ def run_frida_trace():
         text=True
     )
 
-    # Wait for the binary to finish
     stdout, stderr = proc.communicate(timeout=30)
     trace.terminate()
     trace.wait()
@@ -83,8 +76,7 @@ def run_frida_python_api():
     """Use Frida Python API: spawn, hook, resume, wait for exit, get timing via pipe."""
     import frida
 
-    # We need to capture the binary's stdout.
-    # Strategy: redirect the binary's output to a file via a tiny wrapper.
+    # redirect output via a tiny wrapper
     wrapper_src = os.path.join(DIR, "frida_bench_wrapper.c")
     with open(wrapper_src, "w") as f:
         f.write(f"""
@@ -92,7 +84,7 @@ def run_frida_python_api():
 #include <stdlib.h>
 #include <unistd.h>
 int main(int argc, char **argv) {{
-    // Redirect stdout to a temp file
+    // redirect stdout to a temp file
     char *tmp = "/tmp/frida_bench_out.txt";
     freopen(tmp, "w", stdout);
     return system("{BENCH_BIN}");
@@ -111,7 +103,6 @@ int main(int argc, char **argv) {{
     script.load()
     frida.resume(pid)
 
-    # Wait for process to exit
     for _ in range(300):
         try:
             frida.get_process(pid)
@@ -121,7 +112,6 @@ int main(int argc, char **argv) {{
 
     session.detach()
 
-    # Read the output
     time.sleep(0.2)
     try:
         with open("/tmp/frida_bench_out.txt") as f:
@@ -139,7 +129,6 @@ if __name__ == "__main__":
     print("  1M iterations of a 5-nop + ret function")
     print("=" * 60)
 
-    # Native baseline
     print("\n--- Native baseline (10 runs) ---")
     natives = []
     for i in range(10):
@@ -150,7 +139,6 @@ if __name__ == "__main__":
     native_max = max(natives)
     print(f"  avg: {native_avg:.2f}  min: {native_min:.2f}  max: {native_max:.2f} ns/call")
 
-    # Frida via Python API
     print("\n--- Frida Interceptor (5 runs) ---")
     frida_vals = []
     for i in range(5):

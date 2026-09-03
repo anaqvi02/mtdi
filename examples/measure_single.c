@@ -1,5 +1,4 @@
-// measure_single.c — measure cost of a single function call with high precision.
-// Uses mach_absolute_time directly for best resolution on Apple Silicon.
+// single-call cost via mach_absolute_time
 #include <stdio.h>
 #include <mach/mach_time.h>
 
@@ -11,10 +10,10 @@ int main(void) {
     mach_timebase_info_data_t tb;
     mach_timebase_info(&tb);
 
-    // Warm up branch predictor
+    // warm up branch predictor
     for (int i = 0; i < 10000; i++) target_func();
 
-    // Measure single-call cost over many samples to get statistical distribution
+    // many samples -> distribution
     const int SAMPLES = 100000;
     uint64_t times[100000];
 
@@ -22,17 +21,16 @@ int main(void) {
         uint64_t t0 = mach_absolute_time();
         target_func();
         uint64_t t1 = mach_absolute_time();
-        times[i] = (t1 - t0) * tb.numer / tb.denom; // convert to ns
+        times[i] = (t1 - t0) * tb.numer / tb.denom;
     }
 
-    // Sort for percentiles
     for (int i = 0; i < SAMPLES - 1; i++)
         for (int j = i + 1; j < SAMPLES; j++)
             if (times[j] < times[i]) {
                 uint64_t tmp = times[i]; times[i] = times[j]; times[j] = tmp;
             }
 
-    // Filter out zero-time entries (timer granularity issue)
+    // drop zero-time samples (timer granularity)
     int nonzero = 0;
     uint64_t sum = 0;
     for (int i = 0; i < SAMPLES; i++) {

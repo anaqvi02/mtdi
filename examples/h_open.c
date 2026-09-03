@@ -1,7 +1,6 @@
-// h_open.c — real-world open() cost harness for mtdi.
-// mode 0: warm loop      (200k opens, back to back)
-// mode 1: cold scattered (5k opens, 16MB memory touch between each)
-// mode 2: first call     (single open, cold process)
+// mode 0: warm loop (200k opens)
+// mode 1: cold (5k opens, 16mb touch between)
+// mode 2: first call (cold process)
 #include <stdio.h>
 #include <fcntl.h>
 #include <unistd.h>

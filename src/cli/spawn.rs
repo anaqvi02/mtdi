@@ -29,16 +29,15 @@ fn has_dyld_entitlement(binary_path: &str) -> bool {
         .output()
         .unwrap_or_else(|_| Command::new("true").output().unwrap());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    // disable-library-validation also lifts the DYLD_* env stripping for
-    // hardened binaries (e.g. Spotify carries only this one) — both count.
+    // disable-library-validation also lifts dyld env stripping for
+    // hardened bins (e.g. spotify); both count
     stdout.contains("com.apple.security.cs.allow-dyld-environment-variables")
         || stdout.contains("com.apple.security.cs.disable-library-validation")
 }
 
-/// Hard-fails (instead of warning-and-continuing) when launch-time injection
-/// is impossible: SIP on + Apple system binary, or hardened runtime without
-/// either dyld entitlement. Both cases silently strip DYLD_INSERT_LIBRARIES,
-/// so a trace would run with zero hooks and the user would have no idea.
+/// hard-fail when launch injection is impossible (sip on + apple binary,
+/// or hardened without dyld entitlement): silent dyld env stripping
+/// would trace with zero hooks and the user would never know
 fn check_sip_and_codesign(binary_path: &str) -> Result<(), String> {
     if !is_sip_enabled() {
         return Ok(());
@@ -88,8 +87,7 @@ pub fn spawn_target(args: AppArgs, dylib_path: &Path) -> std::io::Result<()> {
     if args.ecs_output {
         cmd.env("MTDI_ECS", "1");
     }
-    // Launch mode: the dylib may take over SIGTERM so a Ctrl-C (forwarded by
-    // the CLI) drains the ring instead of killing the trace mid-flight.
+    // launch mode: sigterm drains the ring instead of truncating the trace
     cmd.env("MTDI_OWN_SIGTERM", "1");
 
     let mut child = cmd.spawn()?;

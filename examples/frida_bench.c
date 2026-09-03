@@ -1,6 +1,4 @@
-// frida_bench.c — minimal target for measuring Frida interceptor overhead.
-// Compiled: gcc -O2 -o frida_bench frida_bench.c
-// Run natively to get baseline, then with Frida hook to get hooked time.
+// minimal target: native run = baseline, frida run = overhead
 
 #include <stdio.h>
 #include <time.h>
@@ -26,7 +24,7 @@ int main(void) {
                       + (double)(end.tv_nsec - start.tv_nsec);
     double per_call_ns = elapsed_ns / ITERATIONS;
 
-    // Print per-call time in nanoseconds so the Frida script can parse it
+    // per-call ns for the frida script to parse
     printf("%.2f ns/call (%lld iterations)\n", per_call_ns, ITERATIONS);
     return 0;
 }

@@ -28,9 +28,8 @@ const RTLD_NOW: u64 = 2; // Darwin value (not 1 like Linux)
 const STUB_OFF: u64 = 0x4000; // remote allocation: bootstrap stub (own 16K page, set RX)
 const SLOT_OFF: u64 = 0x8000; // remote allocation: scratch pthread_t* slot (RW page)
 
-/// Emits `movz reg, #imm16; movk reg, #imm16, lsl 16/32/48` for a 64-bit
-/// absolute address. Shared-cache addresses and our own allocation are both
-/// valid in the target, so a raw 64-bit immediate is safe.
+/// emits movz/movk for a 64-bit absolute address
+/// (shared-cache addresses are valid in the target)
 fn mov_addr(reg: u32, addr: u64) -> [u32; 4] {
     let lo = (addr & 0xFFFF) as u32;
     let mut out = [0u32; 4];
@@ -62,7 +61,7 @@ pub fn inject_into_pid(pid: i32, dylib_path: &std::path::Path) {
 
     println!("Success! Acquired task port: {}", target_task);
     
-    // Allocate 1MB for the thread stack + string payload
+    // 1mb for stack + payload
     let mut remote_address: mach_vm_address_t = 0;
     let allocation_size = 1024 * 1024; // 1MB stack
 
@@ -77,7 +76,7 @@ pub fn inject_into_pid(pid: i32, dylib_path: &std::path::Path) {
 
     println!("Successfully allocated remote memory at: {:#x}", remote_address);
 
-    // 1. Write the dylib path into the very bottom of the allocated memory
+    // 1. write dylib path at the bottom
     let mut path_bytes = dylib_path.to_string_lossy().into_owned().into_bytes();
     path_bytes.push(0); // Null terminator
 
@@ -97,30 +96,26 @@ pub fn inject_into_pid(pid: i32, dylib_path: &std::path::Path) {
 
     println!("Successfully wrote dylib path to remote memory.");
 
-    // 2. Resolve the functions we need
+    // 2. resolve functions
     let dlopen_ptr = libc::dlopen as *const () as u64;
     let pthread_exit_ptr = libc::pthread_exit as *const () as u64;
-    // Apple extension that converts the CALLING raw mach thread into a real
-    // pthread before running a start routine. Without it, dyld4's dlopen
-    // faults immediately: clearErrorString() reads this thread's pthread TSD
-    // (pthread_getspecific), and a raw mach thread has a NULL TSD base.
+    // pthread_create_from_mach_thread converts the raw mach thread into a
+    // real pthread; dyld4's dlopen reads pthread TSD (clearErrorString),
+    // and a raw mach thread has a null TSD base
     let pthread_create_from_mach_ptr = unsafe {
-        libc::dlsym(libc::RTLD_DEFAULT, b"pthread_create_from_mach_thread\0".as_ptr() as *const libc::c_char)
+        libc::dlsym(libc::RTLD_DEFAULT, c"pthread_create_from_mach_thread".as_ptr())
     } as u64;
     let dlerror_ptr = unsafe {
-        libc::dlsym(libc::RTLD_DEFAULT, b"dlerror\0".as_ptr() as *const libc::c_char)
+        libc::dlsym(libc::RTLD_DEFAULT, c"dlerror".as_ptr())
     } as u64;
 
-    // 3. Set up the thread state
+    // 3. thread state
     let mut state: arm_thread_state64_t = unsafe { std::mem::zeroed() };
     
     if pthread_create_from_mach_ptr != 0 {
-        // Bootstrap path: PC = our stub, which hands the dlopen work to a
-        // proper pthread (pthread_create_from_mach_thread, or a spawned
-        // thread — either way TLS is valid there). The raw mach thread NEVER
-        // terminates: pthread_exit/_exit on it crashes, because its
-        // TPIDRRO_EL0 (TLS base) is NULL and libpthread reads it during
-        // teardown. So after the call it parks on nanosleep instead.
+        // bootstrap: stub hands dlopen to a real pthread (tls valid there);
+        // the raw thread never terminates (pthread_exit crashes with null
+        // tpidrro_el0), so it parks on nanosleep after calling
         let slot_addr = remote_address + SLOT_OFF;
         let path_addr = remote_address;
         let start_addr = remote_address + STUB_OFF + 104; // 18 entry + 8 park insns
@@ -130,25 +125,21 @@ pub fn inject_into_pid(pid: i32, dylib_path: &std::path::Path) {
         let err_addr = remote_address + 0x170; // dlerror() string pointer
 
         let mut stub: Vec<u32> = Vec::with_capacity(64);
-        // entry: pthread_create_from_mach_thread(&slot, NULL, start, path)
+        // entry: pthread_create_from_mach_thread(&slot, null, start, path)
         stub.extend_from_slice(&mov_addr(0, slot_addr)); // x0 = &slot
         stub.push(0xD2800001); // movz x1, #0 (attr NULL)
         stub.extend_from_slice(&mov_addr(2, start_addr)); // x2 = start_routine
         stub.extend_from_slice(&mov_addr(3, path_addr)); // x3 = dylib path
         stub.extend_from_slice(&mov_addr(16, pthread_create_from_mach_ptr));
         stub.push(0xD63F0200); // blr x16
-        // park (never terminate the raw thread)
+        // park; never terminate the raw thread
         stub.extend_from_slice(&mov_addr(0, timespec_addr));
         stub.push(0xD2800001); // mov x1, #0 (rem = NULL)
         stub.push(0xD2800450); // movz x16, #34 (SYS_nanosleep)
         stub.push(0xD4000001); // svc #0x80
         stub.push(0x17FFFFF9); // b park-start (reload, re-sleep)
 
-        // start_routine(arg=path in x0):
-        //   *(u8*)marker      = 'R'  (plain store; CLI reads it back)
-        //   dlopen(path, RTLD_NOW)   (path kept in callee-saved x19)
-        //   *(u8*)marker+1    = 'D'
-        //   park (never return)
+        // start(path=x0): marker='r'; dlopen(path, RTLD_NOW); marker+1='d'; park
         stub.push(0xAA0003F3); // mov x19, x0 (save path arg)
         stub.extend_from_slice(&mov_addr(1, marker_addr)); // &marker
         stub.push(0xD2800A40); // movz w0, #0x52 ('R')
@@ -159,10 +150,10 @@ pub fn inject_into_pid(pid: i32, dylib_path: &std::path::Path) {
         stub.extend_from_slice(&mov_addr(16, dlopen_ptr));
         stub.push(0xD63F0200); // blr x16
 
-        // load-ack: *(u64*)ack_addr = dlopen's return (non-NULL = loaded)
+        // load-ack: ack_addr = dlopen's return (non-null = loaded)
         stub.extend_from_slice(&mov_addr(1, ack_addr));
         stub.push(0xF9000020); // str x0, [x1]
-        // dlopen failed? capture dlerror() so the CLI can report the reason.
+        // on failure capture dlerror() for the cli
         stub.extend_from_slice(&mov_addr(16, dlerror_ptr));
         stub.push(0xD63F0200); // blr x16
         stub.extend_from_slice(&mov_addr(1, err_addr));
@@ -194,7 +185,7 @@ pub fn inject_into_pid(pid: i32, dylib_path: &std::path::Path) {
             eprintln!("Failed to write bootstrap stub into remote memory! KR: {}", kr);
             std::process::exit(1);
         }
-        // diagnostics: 'R' at marker, 'D' at marker+1, timespec {1,0}
+        // diag: 'r'/'d' markers, park timespec {1,0}
         let diag: [u8; 24] = {
             let mut b = [0u8; 24];
             b[0] = b'R';
@@ -214,8 +205,7 @@ pub fn inject_into_pid(pid: i32, dylib_path: &std::path::Path) {
             eprintln!("Failed to write diag bytes! KR: {}", kr);
             std::process::exit(1);
         }
-        // The stub page starts RW from mach_vm_allocate; make it executable or
-        // the very first instruction fetch faults (W^X).
+        // stub page starts rw; make it rx or the first fetch faults (w^x)
         let kr = unsafe {
             mach_vm_protect(
                 target_task as task_name_t,
@@ -233,18 +223,17 @@ pub fn inject_into_pid(pid: i32, dylib_path: &std::path::Path) {
         state.__pc = remote_address + STUB_OFF;
         state.__lr = pthread_exit_ptr;
     } else {
-        // Legacy fallback: raw thread straight into dlopen (pre-dyld4 or if
-        // the bootstrap symbol is ever absent).
+        // fallback: raw thread straight into dlopen (pre-dyld4)
         state.__x[0] = remote_address as u64; // dylib path
         state.__x[1] = RTLD_NOW;
         state.__pc = dlopen_ptr;
         state.__lr = pthread_exit_ptr;
     }
     
-    // SP = top of the 1MB allocation (16-byte aligned)
+    // sp = top of allocation, 16-byte aligned
     state.__sp = (remote_address + allocation_size - 16) & !0xF;
 
-    // 4. Create and start the thread
+    // 4. create + start thread
     let mut child_thread: thread_act_t = 0;
     
     let kr = unsafe {
@@ -262,9 +251,7 @@ pub fn inject_into_pid(pid: i32, dylib_path: &std::path::Path) {
         std::process::exit(1);
     }
 
-    // #2 load-ack: wait (bounded) for the start routine to store dlopen's
-    // return value, then report whether the dylib actually loaded. Turns
-    // injection regressions into detectable failures instead of theater.
+    // wait for load-ack so injection regressions fail loudly, not silently
     if pthread_create_from_mach_ptr != 0 {
         let mut ack: u64 = 0;
         let mut outsize: mach2::vm_types::mach_vm_size_t = 8;
@@ -286,8 +273,7 @@ pub fn inject_into_pid(pid: i32, dylib_path: &std::path::Path) {
         if ack != 0 {
             println!("[mtdi] Dylib loaded into PID {} (handle {:#x})", pid, ack);
         } else {
-            // Read the diagnostic markers to explain the failure mode:
-            // R set = start routine ran; D set = dlopen returned.
+            // read markers: r = start ran, d = dlopen returned
             let mut marks = [0u8; 2];
             let mut msize: mach2::vm_types::mach_vm_size_t = 2;
             unsafe {
@@ -310,8 +296,7 @@ pub fn inject_into_pid(pid: i32, dylib_path: &std::path::Path) {
                     &mut asize,
                 )
             };
-            // If dlopen failed, the stub captured dlerror()'s message pointer
-            // at +0x170 — read the pointer, then the message itself.
+            // dlopen failed: read dlerror ptr at +0x170, then the message
             let mut err_detail = String::new();
             let mut err_ptr: u64 = 0;
             let mut esize: mach2::vm_types::mach_vm_size_t = 8;

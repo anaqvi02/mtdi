@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 static TRAMPOLINE_BASE: AtomicUsize = AtomicUsize::new(0);
 static TRAMPOLINE_OFFSET: AtomicUsize = AtomicUsize::new(0);
-const PAGE_SIZE: usize = 16384; // 16KB on Apple Silicon
+const PAGE_SIZE: usize = 16384; // 16kb on apple silicon
 
 pub fn allocate_trampoline(size: usize) -> usize {
     let mut base = TRAMPOLINE_BASE.load(Ordering::Acquire);

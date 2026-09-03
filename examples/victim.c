@@ -12,14 +12,12 @@
 #include <signal.h>
 
 int main() {
-    signal(SIGPIPE, SIG_IGN); // send()/recv() on a dead socket would otherwise kill the demo
+    signal(SIGPIPE, SIG_IGN); // dead socket would otherwise kill the demo
     printf("[Victim] Starting exhaustive syscall test...\n");
 
-    // 1. stat
     struct stat st;
     stat("test.txt", &st);
 
-    // 2. open, write, read, close
     int fd = open("test.txt", O_RDWR | O_CREAT, 0644);
     if (fd != -1) {
         write(fd, "hello", 5);
@@ -29,13 +27,11 @@ int main() {
         close(fd);
     }
 
-    // 3. mmap, munmap
     void *mem = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (mem != MAP_FAILED) {
         munmap(mem, 4096);
     }
 
-    // 4. socket, connect, send, recv
     int sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock != -1) {
         struct sockaddr_in server;
@@ -43,7 +39,7 @@ int main() {
         server.sin_port = htons(80);
         inet_pton(AF_INET, "93.184.216.34", &server.sin_addr); // example.com
         
-        // This will block slightly or fail, but we just want to hit the hook
+        // may block or fail; we just want to hit the hook
         connect(sock, (struct sockaddr *)&server, sizeof(server));
         
         send(sock, "GET / HTTP/1.0\r\n\r\n", 18, 0);
@@ -53,16 +49,15 @@ int main() {
         close(sock);
     }
 
-    // 5. fork, execve, exit
     pid_t pid = fork();
     if (pid == 0) {
-        // Child
+        // child
         char *argv[] = {"/bin/echo", "Child process reporting in!", NULL};
         char *envp[] = {NULL};
         execve("/bin/echo", argv, envp);
         exit(0);
     } else if (pid > 0) {
-        // Parent
+        // parent
         waitpid(pid, NULL, 0);
     }
 

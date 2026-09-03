@@ -1,5 +1,4 @@
-// probes/probe_open.rs
-// A 100% Safe Rust probe executed inside the mtdis sandbox
+// safe probe template for the mtdis sandbox
 
 pub fn on_open(ctx: &mut MtdiSafeContext) {
     if let Some(path) = ctx.read_arg_str(0, 256) {

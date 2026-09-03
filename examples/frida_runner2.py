@@ -16,14 +16,13 @@ def native_baseline():
 
 def frida_hooked():
     import frida
-    # Remove old result
     try: os.unlink(RESULT_FILE)
     except: pass
 
     pid = frida.spawn([BENCH_BIN])
     session = frida.attach(pid)
 
-    # Hook target_func — empty callbacks like a typical trace
+    # empty callbacks like a typical trace
     script = session.create_script("""
     Interceptor.attach(Module.findExportByName(null, 'target_func'), {
         onEnter(args) {},
@@ -33,7 +32,6 @@ def frida_hooked():
     script.load()
     frida.resume(pid)
 
-    # Wait for process to exit
     for _ in range(300):
         try:
             frida.get_process(pid)
@@ -43,7 +41,6 @@ def frida_hooked():
 
     session.detach()
 
-    # Read result from file
     time.sleep(0.3)
     try:
         with open(RESULT_FILE) as f:
@@ -59,14 +56,12 @@ if __name__ == "__main__":
     print("  1M iterations, same target function")
     print("=" * 60)
 
-    # Native
     natives = []
     for _ in range(10):
         natives.append(native_baseline())
     native_avg = sum(natives) / len(natives)
     print(f"\n  Native baseline:     {native_avg:.2f} ns/call (avg of 10)")
 
-    # Frida
     print(f"\n  Running under Frida (5 runs)...")
     frida_vals = []
     for i in range(5):

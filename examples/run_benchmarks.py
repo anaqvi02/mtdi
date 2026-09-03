@@ -48,7 +48,7 @@ def main():
     filtered = run_trials("./target/release/mtdi -t asdf ./heavy_bench", 5)
     
     print("\n[3/3] Running Traced (Logged) benchmarks (5 trials)...")
-    # Write to /dev/null to avoid blowing up the disk with 17 million lines of logs
+    # /dev/null: 17m log lines would blow up the disk
     logged = run_trials("./target/release/mtdi -o /dev/null ./heavy_bench", 5)
 
     print("\n\n=== EXHAUSTIVE BENCHMARK RESULTS (0.5m iters, 5 trials avg) ===")

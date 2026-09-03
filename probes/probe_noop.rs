@@ -1,8 +1,5 @@
-// probes/probe_noop.rs
-// Bisect step 2: probe dylib that registers ZERO hooks.
-// If Firefox still crashes with this injected, the crash is in the probe
-// dylib's constructor/harness, not in any hook.
+// bisect 2: dylib with zero hooks
+// if the target still crashes, it's the constructor, not a hook
 
 pub fn register(_reg: &mut MtdiRegistry) {
-    // intentionally empty
 }

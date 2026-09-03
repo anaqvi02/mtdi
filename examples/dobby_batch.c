@@ -1,5 +1,4 @@
-// dobby_batch.c — batch-timed hook overhead, proper statistical measurement.
-// Uses clock_gettime (microsecond resolution) with 10M iterations.
+// batch-timed hook overhead (10m x 10 trials)
 #include <stdio.h>
 #include <time.h>
 #include <mach/mach_time.h>
@@ -23,7 +22,7 @@ static double time_loop(long long iters) {
 }
 
 int main(void) {
-    const long long ITERS = 10000000LL;  // 10M for better signal
+    const long long ITERS = 10000000LL;
     const int TRIALS = 10;
 
     printf("==================================================\n");
@@ -31,14 +30,12 @@ int main(void) {
     printf("  %lld iterations × %d trials\n", ITERS, TRIALS);
     printf("==================================================\n\n");
 
-    // --- Native baseline ---
     double native[TRIALS];
     for (int i = 0; i < TRIALS; i++) native[i] = time_loop(ITERS);
     double navg = 0;
     for (int i = 0; i < TRIALS; i++) navg += native[i];
     navg /= TRIALS;
 
-    // --- DobbyHook ---
     void *orig = NULL;
     DobbyHook((void *)target_func, (void *)fake_func, &orig);
     double hook[TRIALS];
@@ -48,7 +45,6 @@ int main(void) {
     havg /= TRIALS;
     DobbyDestroy((void *)target_func);
 
-    // --- DobbyInstrument ---
     DobbyInstrument((void *)target_func, instrument_cb);
     double inst[TRIALS];
     for (int i = 0; i < TRIALS; i++) inst[i] = time_loop(ITERS);

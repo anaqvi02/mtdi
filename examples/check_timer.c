@@ -12,7 +12,7 @@ int main(void) {
     clock_gettime(CLOCK_MONOTONIC, &ts);
     printf("clock_gettime resolution test:\n");
 
-    // Measure smallest measurable difference
+// measure smallest measurable difference
     struct timespec a, b;
     long long diffs[100];
     for (int i = 0; i < 100; i++) {
@@ -29,7 +29,6 @@ int main(void) {
     }
     printf("  back-to-back reads: min=%lld  max=%lld  zeros=%d/100\n", min_diff, max_diff, zero_count);
 
-    // Now measure what 1M loop iterations actually takes
     struct timespec start, end;
     volatile int x = 0;
     clock_gettime(CLOCK_MONOTONIC, &start);
