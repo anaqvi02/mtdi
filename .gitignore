@@ -28,6 +28,20 @@ victim
 victim2
 hello
 hello.go
+check_timer
+dobby_batch
+dobby_bench
+dobby_single
+frida_bench
+frida_bench2
+frida_bench3
+frida_bench_wrapper
+measure_single
+syscall_bench
+frida_bench_wrapper.c
+
+# Agent notes — machine-specific, never publish
+.hermes.md
 
 # Historical scratch files
 patch_lib.py
