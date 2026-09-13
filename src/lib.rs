@@ -295,6 +295,7 @@ static INITIALIZE: unsafe extern "C" fn() = {
                         let usec = current_usec % 1_000_000;
                         
                         let mut buf = [0u8; 8192];
+                        let buf_len = buf.len();
                         let mut slice = &mut buf[..];
                         
                         let formatter = SlotFormatter { slot, json: is_json, ecs: is_ecs };
@@ -320,7 +321,10 @@ static INITIALIZE: unsafe extern "C" fn() = {
                             let _ = writeln!(slice, "[{:02}:{:02}:{:02}.{:06}] [mtdi] Caught {}", h, m, s, usec, formatter);
                         }
                         
-                        let len = 4096 - slice.len();
+                        // written length = what writeln! consumed; derived from
+                        // buf, never a hardcoded constant (it drifted: buf grew
+                        // to 8192 while this said 4096 -> underflow -> EFAULT)
+                        let len = buf_len - slice.len();
                         // guard: the reader's own output write must never
                         // be traced back into itself
                         READER_WRITING.store(true, Ordering::Relaxed);
